@@ -1,0 +1,794 @@
+from __future__ import annotations
+
+import json
+import os
+from contextlib import contextmanager
+from datetime import datetime
+from threading import Lock
+from typing import Any, Iterator
+
+
+_schema_lock = Lock()
+_schema_ready = False
+
+
+def configured() -> bool:
+    return all(
+        os.getenv(name)
+        for name in ["ADAPTER_DB_HOST", "ADAPTER_DB_NAME", "ADAPTER_DB_USER", "ADAPTER_DB_PASSWORD"]
+    )
+
+
+@contextmanager
+def connect() -> Iterator[Any]:
+    import pymysql
+
+    conn = pymysql.connect(
+        host=os.environ["ADAPTER_DB_HOST"],
+        port=int(os.getenv("ADAPTER_DB_PORT", "3306")),
+        user=os.environ["ADAPTER_DB_USER"],
+        password=os.environ["ADAPTER_DB_PASSWORD"],
+        database=os.environ["ADAPTER_DB_NAME"],
+        charset="utf8mb4",
+        autocommit=True,
+        cursorclass=pymysql.cursors.DictCursor,
+        connect_timeout=5,
+        read_timeout=10,
+        write_timeout=10,
+    )
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def ensure_schema() -> None:
+    global _schema_ready
+    if _schema_ready or not configured():
+        return
+    with _schema_lock:
+        if _schema_ready:
+            return
+        with connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS adapter_status (
+                        task_id VARCHAR(128) PRIMARY KEY COMMENT '任务ID',
+                        status VARCHAR(64) NOT NULL COMMENT '任务状态：SUCCESS成功，FAILED失败，WAIT_APPROVAL待审批，UNKNOWN未知',
+                        message VARCHAR(1024) NOT NULL COMMENT '状态说明',
+                        data_json JSON NULL COMMENT '安全结果数据JSON',
+                        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter任务状态表'
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS adapter_audit (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
+                        ts TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '事件时间',
+                        event VARCHAR(64) NOT NULL COMMENT '事件类型：preview预览，execute执行，status状态查询',
+                        task_id VARCHAR(128) NULL COMMENT '任务ID',
+                        operator VARCHAR(128) NULL COMMENT '操作人',
+                        system_name VARCHAR(64) NULL COMMENT '适配系统',
+                        action_name VARCHAR(128) NULL COMMENT '适配动作',
+                        env_name VARCHAR(64) NULL COMMENT '环境',
+                        host_id VARCHAR(128) NULL COMMENT '主机ID',
+                        approval_id VARCHAR(128) NULL COMMENT '审批ID',
+                        approved TINYINT(1) NULL COMMENT '是否显式审批：1是，0否',
+                        status VARCHAR(64) NULL COMMENT '执行状态：PREVIEWED已预览，BLOCKED已阻断，SUCCESS成功，FAILED失败，WAIT_APPROVAL待审批，UNKNOWN未知',
+                        message VARCHAR(1024) NULL COMMENT '执行说明',
+                        elapsed_ms INT NULL COMMENT '耗时毫秒',
+                        payload_json JSON NULL COMMENT '安全审计载荷JSON',
+                        KEY idx_adapter_audit_task_id (task_id),
+                        KEY idx_adapter_audit_ts (ts)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter审计日志表'
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS adapter_apifox_project_config (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
+                        project_name VARCHAR(128) NOT NULL COMMENT '项目名称，例如 jdb-order',
+                        apifox_project_id VARCHAR(64) NOT NULL COMMENT 'Apifox项目ID',
+                        remark VARCHAR(512) NULL COMMENT '备注',
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                        UNIQUE KEY uk_adapter_apifox_project_name (project_name),
+                        KEY idx_adapter_apifox_project_id (apifox_project_id)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter Apifox项目映射配置表'
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS adapter_apifox_pipeline_config (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
+                        pipeline_id VARCHAR(64) NOT NULL COMMENT '云效流水线ID',
+                        project_name VARCHAR(128) NOT NULL COMMENT '项目名称，例如 jdb-order',
+                        remark VARCHAR(512) NULL COMMENT '备注',
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                        UNIQUE KEY uk_adapter_apifox_pipeline_id (pipeline_id),
+                        KEY idx_adapter_apifox_pipeline_project_name (project_name)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter Apifox流水线项目映射配置表'
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS adapter_dingtalk_app_config (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
+                        config_name VARCHAR(128) NOT NULL COMMENT '配置名称，例如 default',
+                        app_key VARCHAR(128) NOT NULL COMMENT '钉钉应用AppKey',
+                        app_secret VARCHAR(512) NOT NULL COMMENT '钉钉应用AppSecret',
+                        auth_endpoint VARCHAR(1024) NOT NULL DEFAULT 'https://api.dingtalk.com/v1.0/oauth2/accessToken' COMMENT '获取access_token的接口地址',
+                        token_header_name VARCHAR(128) NOT NULL DEFAULT 'x-acs-dingtalk-access-token' COMMENT '业务接口token请求头名称',
+                        operator_id VARCHAR(128) NULL COMMENT '钉钉文档操作人userId',
+                        doc_info_method VARCHAR(16) NOT NULL DEFAULT 'GET' COMMENT '文档元数据接口HTTP方法',
+                        doc_info_url_template VARCHAR(2048) NULL COMMENT '文档元数据接口URL模板',
+                        doc_info_body_template JSON NULL COMMENT '文档元数据接口JSON请求体模板',
+                        doc_read_method VARCHAR(16) NOT NULL DEFAULT 'GET' COMMENT '文档正文接口HTTP方法',
+                        doc_read_url_template VARCHAR(2048) NULL COMMENT '文档正文接口URL模板',
+                        doc_read_body_template JSON NULL COMMENT '文档正文接口JSON请求体模板',
+                        sheet_list_method VARCHAR(16) NOT NULL DEFAULT 'GET' COMMENT '表格sheet列表接口HTTP方法',
+                        sheet_list_url_template VARCHAR(2048) NULL COMMENT '表格sheet列表接口URL模板',
+                        sheet_list_body_template JSON NULL COMMENT '表格sheet列表接口JSON请求体模板',
+                        sheet_range_method VARCHAR(16) NOT NULL DEFAULT 'GET' COMMENT '表格range读取接口HTTP方法',
+                        sheet_range_url_template VARCHAR(2048) NULL COMMENT '表格range读取接口URL模板',
+                        sheet_range_body_template JSON NULL COMMENT '表格range读取接口JSON请求体模板',
+                        access_token TEXT NULL COMMENT 'Adapter缓存的钉钉access_token',
+                        token_expires_at DATETIME NULL COMMENT 'access_token过期时间',
+                        remark VARCHAR(512) NULL COMMENT '备注',
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                        UNIQUE KEY uk_adapter_dingtalk_config_name (config_name)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter钉钉应用配置表'
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS adapter_dingtalk_app (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
+                        app_name VARCHAR(128) NOT NULL COMMENT '钉钉应用名称，例如 JDB小钉',
+                        app_key VARCHAR(128) NOT NULL COMMENT '钉钉应用AppKey',
+                        app_secret VARCHAR(512) NOT NULL COMMENT '钉钉应用AppSecret',
+                        auth_endpoint VARCHAR(1024) NOT NULL DEFAULT 'https://api.dingtalk.com/v1.0/oauth2/accessToken' COMMENT '获取access_token的接口地址',
+                        token_header_name VARCHAR(128) NOT NULL DEFAULT 'x-acs-dingtalk-access-token' COMMENT '业务接口token请求头名称',
+                        access_token TEXT NULL COMMENT 'Adapter缓存的钉钉access_token',
+                        token_expires_at DATETIME NULL COMMENT 'access_token过期时间',
+                        remark VARCHAR(512) NULL COMMENT '备注',
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                        UNIQUE KEY uk_adapter_dingtalk_app_name (app_name),
+                        KEY idx_adapter_dingtalk_app_key (app_key)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter钉钉应用表'
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS adapter_dingtalk_doc_config (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
+                        config_name VARCHAR(128) NOT NULL COMMENT '配置名称，例如 default',
+                        app_name VARCHAR(128) NOT NULL COMMENT '钉钉应用名称，关联adapter_dingtalk_app.app_name',
+                        operator_id VARCHAR(128) NULL COMMENT '钉钉文档操作人userId',
+                        doc_info_method VARCHAR(16) NOT NULL DEFAULT 'GET' COMMENT '文档元数据接口HTTP方法',
+                        doc_info_url_template VARCHAR(2048) NULL COMMENT '文档元数据接口URL模板',
+                        doc_info_body_template JSON NULL COMMENT '文档元数据接口JSON请求体模板',
+                        doc_read_method VARCHAR(16) NOT NULL DEFAULT 'GET' COMMENT '文档正文接口HTTP方法',
+                        doc_read_url_template VARCHAR(2048) NULL COMMENT '文档正文接口URL模板',
+                        doc_read_body_template JSON NULL COMMENT '文档正文接口JSON请求体模板',
+                        sheet_list_method VARCHAR(16) NOT NULL DEFAULT 'GET' COMMENT '表格sheet列表接口HTTP方法',
+                        sheet_list_url_template VARCHAR(2048) NULL COMMENT '表格sheet列表接口URL模板',
+                        sheet_list_body_template JSON NULL COMMENT '表格sheet列表接口JSON请求体模板',
+                        sheet_range_method VARCHAR(16) NOT NULL DEFAULT 'GET' COMMENT '表格range读取接口HTTP方法',
+                        sheet_range_url_template VARCHAR(2048) NULL COMMENT '表格range读取接口URL模板',
+                        sheet_range_body_template JSON NULL COMMENT '表格range读取接口JSON请求体模板',
+                        remark VARCHAR(512) NULL COMMENT '备注',
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                        UNIQUE KEY uk_adapter_dingtalk_doc_config_name (config_name),
+                        KEY idx_adapter_dingtalk_doc_app_name (app_name)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter钉钉文档读取配置表'
+                    """
+                )
+                _ensure_comments(cursor)
+                _migrate_dingtalk_app_config(cursor)
+        _schema_ready = True
+
+
+def _ensure_comments(cursor) -> None:
+    statements = [
+        "ALTER TABLE adapter_status COMMENT='Adapter任务状态表'",
+        "ALTER TABLE adapter_status MODIFY task_id VARCHAR(128) COMMENT '任务ID'",
+        "ALTER TABLE adapter_status MODIFY status VARCHAR(64) NOT NULL COMMENT '任务状态：SUCCESS成功，FAILED失败，WAIT_APPROVAL待审批，UNKNOWN未知'",
+        "ALTER TABLE adapter_status MODIFY message VARCHAR(1024) NOT NULL COMMENT '状态说明'",
+        "ALTER TABLE adapter_status MODIFY data_json JSON NULL COMMENT '安全结果数据JSON'",
+        "ALTER TABLE adapter_status MODIFY updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'",
+        "ALTER TABLE adapter_audit COMMENT='Adapter审计日志表'",
+        "ALTER TABLE adapter_audit MODIFY id BIGINT NOT NULL AUTO_INCREMENT COMMENT '自增主键'",
+        "ALTER TABLE adapter_audit MODIFY ts TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '事件时间'",
+        "ALTER TABLE adapter_audit MODIFY event VARCHAR(64) NOT NULL COMMENT '事件类型：preview预览，execute执行，status状态查询'",
+        "ALTER TABLE adapter_audit MODIFY task_id VARCHAR(128) NULL COMMENT '任务ID'",
+        "ALTER TABLE adapter_audit MODIFY operator VARCHAR(128) NULL COMMENT '操作人'",
+        "ALTER TABLE adapter_audit MODIFY system_name VARCHAR(64) NULL COMMENT '适配系统'",
+        "ALTER TABLE adapter_audit MODIFY action_name VARCHAR(128) NULL COMMENT '适配动作'",
+        "ALTER TABLE adapter_audit MODIFY env_name VARCHAR(64) NULL COMMENT '环境'",
+        "ALTER TABLE adapter_audit MODIFY host_id VARCHAR(128) NULL COMMENT '主机ID'",
+        "ALTER TABLE adapter_audit MODIFY approval_id VARCHAR(128) NULL COMMENT '审批ID'",
+        "ALTER TABLE adapter_audit MODIFY approved TINYINT(1) NULL COMMENT '是否显式审批：1是，0否'",
+        "ALTER TABLE adapter_audit MODIFY status VARCHAR(64) NULL COMMENT '执行状态：PREVIEWED已预览，BLOCKED已阻断，SUCCESS成功，FAILED失败，WAIT_APPROVAL待审批，UNKNOWN未知'",
+        "ALTER TABLE adapter_audit MODIFY message VARCHAR(1024) NULL COMMENT '执行说明'",
+        "ALTER TABLE adapter_audit MODIFY elapsed_ms INT NULL COMMENT '耗时毫秒'",
+        "ALTER TABLE adapter_audit MODIFY payload_json JSON NULL COMMENT '安全审计载荷JSON'",
+        "ALTER TABLE adapter_apifox_project_config COMMENT='Adapter Apifox项目映射配置表'",
+        "ALTER TABLE adapter_apifox_project_config MODIFY id BIGINT NOT NULL AUTO_INCREMENT COMMENT '自增主键'",
+        "ALTER TABLE adapter_apifox_project_config MODIFY project_name VARCHAR(128) NOT NULL COMMENT '项目名称，例如 jdb-order'",
+        "ALTER TABLE adapter_apifox_project_config MODIFY apifox_project_id VARCHAR(64) NOT NULL COMMENT 'Apifox项目ID'",
+        "ALTER TABLE adapter_apifox_project_config MODIFY remark VARCHAR(512) NULL COMMENT '备注'",
+        "ALTER TABLE adapter_apifox_project_config MODIFY created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'",
+        "ALTER TABLE adapter_apifox_project_config MODIFY updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'",
+        "ALTER TABLE adapter_apifox_pipeline_config COMMENT='Adapter Apifox流水线项目映射配置表'",
+        "ALTER TABLE adapter_apifox_pipeline_config MODIFY id BIGINT NOT NULL AUTO_INCREMENT COMMENT '自增主键'",
+        "ALTER TABLE adapter_apifox_pipeline_config MODIFY pipeline_id VARCHAR(64) NOT NULL COMMENT '云效流水线ID'",
+        "ALTER TABLE adapter_apifox_pipeline_config MODIFY project_name VARCHAR(128) NOT NULL COMMENT '项目名称，例如 jdb-order'",
+        "ALTER TABLE adapter_apifox_pipeline_config MODIFY remark VARCHAR(512) NULL COMMENT '备注'",
+        "ALTER TABLE adapter_apifox_pipeline_config MODIFY created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'",
+        "ALTER TABLE adapter_apifox_pipeline_config MODIFY updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'",
+        "ALTER TABLE adapter_dingtalk_app_config COMMENT='Adapter钉钉文档读取旧版混合配置表'",
+        "ALTER TABLE adapter_dingtalk_app_config ADD COLUMN operator_id VARCHAR(128) NULL COMMENT '钉钉文档操作人userId' AFTER token_header_name",
+        "ALTER TABLE adapter_dingtalk_app COMMENT='Adapter钉钉应用表'",
+        "ALTER TABLE adapter_dingtalk_doc_config COMMENT='Adapter钉钉文档读取配置表'",
+    ]
+    for statement in statements:
+        try:
+            cursor.execute(statement)
+        except Exception:
+            pass
+
+
+def _migrate_dingtalk_app_config(cursor) -> None:
+    try:
+        cursor.execute(
+            """
+            INSERT INTO adapter_dingtalk_app (
+                app_name,
+                app_key,
+                app_secret,
+                auth_endpoint,
+                token_header_name,
+                access_token,
+                token_expires_at,
+                remark
+            )
+            SELECT
+                CASE
+                    WHEN NULLIF(TRIM(remark), '') IS NOT NULL THEN TRIM(remark)
+                    ELSE config_name
+                END AS app_name,
+                app_key,
+                app_secret,
+                auth_endpoint,
+                token_header_name,
+                access_token,
+                token_expires_at,
+                remark
+            FROM adapter_dingtalk_app_config
+            WHERE app_key IS NOT NULL
+              AND app_secret IS NOT NULL
+            ON DUPLICATE KEY UPDATE
+                app_key = adapter_dingtalk_app.app_key,
+                app_secret = adapter_dingtalk_app.app_secret,
+                auth_endpoint = adapter_dingtalk_app.auth_endpoint,
+                token_header_name = adapter_dingtalk_app.token_header_name,
+                access_token = adapter_dingtalk_app.access_token,
+                token_expires_at = adapter_dingtalk_app.token_expires_at,
+                remark = adapter_dingtalk_app.remark
+            """
+        )
+        cursor.execute(
+            """
+            INSERT INTO adapter_dingtalk_doc_config (
+                config_name,
+                app_name,
+                operator_id,
+                doc_info_method,
+                doc_info_url_template,
+                doc_info_body_template,
+                doc_read_method,
+                doc_read_url_template,
+                doc_read_body_template,
+                sheet_list_method,
+                sheet_list_url_template,
+                sheet_list_body_template,
+                sheet_range_method,
+                sheet_range_url_template,
+                sheet_range_body_template,
+                remark
+            )
+            SELECT
+                config_name,
+                CASE
+                    WHEN NULLIF(TRIM(remark), '') IS NOT NULL THEN TRIM(remark)
+                    ELSE config_name
+                END AS app_name,
+                operator_id,
+                doc_info_method,
+                doc_info_url_template,
+                doc_info_body_template,
+                doc_read_method,
+                doc_read_url_template,
+                doc_read_body_template,
+                sheet_list_method,
+                sheet_list_url_template,
+                sheet_list_body_template,
+                sheet_range_method,
+                sheet_range_url_template,
+                sheet_range_body_template,
+                remark
+            FROM adapter_dingtalk_app_config
+            WHERE config_name IS NOT NULL
+            ON DUPLICATE KEY UPDATE
+                app_name = adapter_dingtalk_doc_config.app_name,
+                operator_id = adapter_dingtalk_doc_config.operator_id,
+                doc_info_method = adapter_dingtalk_doc_config.doc_info_method,
+                doc_info_url_template = adapter_dingtalk_doc_config.doc_info_url_template,
+                doc_info_body_template = adapter_dingtalk_doc_config.doc_info_body_template,
+                doc_read_method = adapter_dingtalk_doc_config.doc_read_method,
+                doc_read_url_template = adapter_dingtalk_doc_config.doc_read_url_template,
+                doc_read_body_template = adapter_dingtalk_doc_config.doc_read_body_template,
+                sheet_list_method = adapter_dingtalk_doc_config.sheet_list_method,
+                sheet_list_url_template = adapter_dingtalk_doc_config.sheet_list_url_template,
+                sheet_list_body_template = adapter_dingtalk_doc_config.sheet_list_body_template,
+                sheet_range_method = adapter_dingtalk_doc_config.sheet_range_method,
+                sheet_range_url_template = adapter_dingtalk_doc_config.sheet_range_url_template,
+                sheet_range_body_template = adapter_dingtalk_doc_config.sheet_range_body_template,
+                remark = adapter_dingtalk_doc_config.remark
+            """
+        )
+    except Exception:
+        pass
+
+
+def dumps(value: Any) -> str:
+    return json.dumps(value or {}, ensure_ascii=False, separators=(",", ":"))
+
+
+def find_apifox_project_config(project_name: str) -> dict[str, Any] | None:
+    if not configured() or not project_name:
+        return None
+    try:
+        ensure_schema()
+        with connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT project_name, apifox_project_id, remark
+                    FROM adapter_apifox_project_config
+                    WHERE LOWER(project_name) = LOWER(%s)
+                    LIMIT 1
+                    """,
+                    (project_name,),
+                )
+                row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "projectName": row.get("project_name"),
+            "apifoxProjectId": row.get("apifox_project_id"),
+            "remark": row.get("remark"),
+        }
+    except Exception:
+        return None
+
+
+def find_apifox_pipeline_config(pipeline_id: str) -> dict[str, Any] | None:
+    if not configured() or not pipeline_id:
+        return None
+    try:
+        ensure_schema()
+        with connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT pipeline_id, project_name, remark
+                    FROM adapter_apifox_pipeline_config
+                    WHERE pipeline_id = %s
+                    LIMIT 1
+                    """,
+                    (pipeline_id,),
+                )
+                row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "pipelineId": row.get("pipeline_id"),
+            "projectName": row.get("project_name"),
+            "remark": row.get("remark"),
+        }
+    except Exception:
+        return None
+
+
+def find_dingtalk_app_config(config_name: str) -> dict[str, Any] | None:
+    if not configured() or not config_name:
+        return None
+    try:
+        ensure_schema()
+        with connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        cfg.config_name,
+                        cfg.app_name,
+                        app.app_key,
+                        app.app_secret,
+                        app.auth_endpoint,
+                        app.token_header_name,
+                        cfg.operator_id,
+                        cfg.doc_info_method,
+                        cfg.doc_info_url_template,
+                        cfg.doc_info_body_template,
+                        cfg.doc_read_method,
+                        cfg.doc_read_url_template,
+                        cfg.doc_read_body_template,
+                        cfg.sheet_list_method,
+                        cfg.sheet_list_url_template,
+                        cfg.sheet_list_body_template,
+                        cfg.sheet_range_method,
+                        cfg.sheet_range_url_template,
+                        cfg.sheet_range_body_template,
+                        app.access_token,
+                        app.token_expires_at,
+                        COALESCE(cfg.remark, app.remark) AS remark
+                    FROM adapter_dingtalk_doc_config cfg
+                    JOIN adapter_dingtalk_app app
+                      ON app.app_name = cfg.app_name
+                    WHERE cfg.config_name = %s
+                    LIMIT 1
+                    """,
+                    (config_name,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    cursor.execute(
+                        """
+                        SELECT
+                            config_name,
+                            NULL AS app_name,
+                            app_key,
+                            app_secret,
+                            auth_endpoint,
+                            token_header_name,
+                            operator_id,
+                            doc_info_method,
+                            doc_info_url_template,
+                            doc_info_body_template,
+                            doc_read_method,
+                            doc_read_url_template,
+                            doc_read_body_template,
+                            sheet_list_method,
+                            sheet_list_url_template,
+                            sheet_list_body_template,
+                            sheet_range_method,
+                            sheet_range_url_template,
+                            sheet_range_body_template,
+                            access_token,
+                            token_expires_at,
+                            remark
+                        FROM adapter_dingtalk_app_config
+                        WHERE config_name = %s
+                        LIMIT 1
+                        """,
+                        (config_name,),
+                    )
+                    row = cursor.fetchone()
+        if not row:
+            return None
+        return _map_dingtalk_config(row)
+    except Exception:
+        return None
+
+
+def update_dingtalk_token_cache(config_name: str, access_token: str, token_expires_at: datetime) -> None:
+    if not configured() or not config_name:
+        return
+    try:
+        ensure_schema()
+        with connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE adapter_dingtalk_app app
+                    JOIN adapter_dingtalk_doc_config cfg
+                      ON cfg.app_name = app.app_name
+                    SET app.access_token = %s,
+                        app.token_expires_at = %s
+                    WHERE cfg.config_name = %s
+                    """,
+                    (access_token, token_expires_at.replace(tzinfo=None), config_name),
+                )
+                if cursor.rowcount == 0:
+                    cursor.execute(
+                        """
+                        UPDATE adapter_dingtalk_app_config
+                        SET access_token = %s,
+                            token_expires_at = %s
+                        WHERE config_name = %s
+                        """,
+                        (access_token, token_expires_at.replace(tzinfo=None), config_name),
+                    )
+    except Exception:
+        return
+
+
+def upsert_dingtalk_doc_config(config_name: str, changes: dict[str, Any]) -> dict[str, Any]:
+    if not configured():
+        raise RuntimeError("Database env is not configured")
+    name = (config_name or "default").strip()
+    if not name:
+        raise ValueError("DingTalk configName is required")
+    ensure_schema()
+    with connect() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    config_name,
+                    app_name,
+                    operator_id,
+                    doc_info_method,
+                    doc_info_url_template,
+                    doc_info_body_template,
+                    doc_read_method,
+                    doc_read_url_template,
+                    doc_read_body_template,
+                    sheet_list_method,
+                    sheet_list_url_template,
+                    sheet_list_body_template,
+                    sheet_range_method,
+                    sheet_range_url_template,
+                    sheet_range_body_template,
+                    remark
+                FROM adapter_dingtalk_doc_config
+                WHERE config_name = %s
+                LIMIT 1
+                """,
+                (name,),
+            )
+            current = cursor.fetchone() or {}
+            values = _doc_config_values(name, current, changes)
+            cursor.execute(
+                """
+                SELECT app_name
+                FROM adapter_dingtalk_app
+                WHERE app_name = %s
+                LIMIT 1
+                """,
+                (values["app_name"],),
+            )
+            if not cursor.fetchone():
+                raise ValueError(f"DingTalk app is missing: {values['app_name']}")
+
+            cursor.execute(
+                """
+                INSERT INTO adapter_dingtalk_doc_config (
+                    config_name,
+                    app_name,
+                    operator_id,
+                    doc_info_method,
+                    doc_info_url_template,
+                    doc_info_body_template,
+                    doc_read_method,
+                    doc_read_url_template,
+                    doc_read_body_template,
+                    sheet_list_method,
+                    sheet_list_url_template,
+                    sheet_list_body_template,
+                    sheet_range_method,
+                    sheet_range_url_template,
+                    sheet_range_body_template,
+                    remark
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    app_name = VALUES(app_name),
+                    operator_id = VALUES(operator_id),
+                    doc_info_method = VALUES(doc_info_method),
+                    doc_info_url_template = VALUES(doc_info_url_template),
+                    doc_info_body_template = VALUES(doc_info_body_template),
+                    doc_read_method = VALUES(doc_read_method),
+                    doc_read_url_template = VALUES(doc_read_url_template),
+                    doc_read_body_template = VALUES(doc_read_body_template),
+                    sheet_list_method = VALUES(sheet_list_method),
+                    sheet_list_url_template = VALUES(sheet_list_url_template),
+                    sheet_list_body_template = VALUES(sheet_list_body_template),
+                    sheet_range_method = VALUES(sheet_range_method),
+                    sheet_range_url_template = VALUES(sheet_range_url_template),
+                    sheet_range_body_template = VALUES(sheet_range_body_template),
+                    remark = VALUES(remark)
+                """,
+                _doc_config_tuple(values),
+            )
+            cursor.execute(
+                """
+                UPDATE adapter_dingtalk_app_config
+                SET operator_id = %s,
+                    doc_info_method = %s,
+                    doc_info_url_template = %s,
+                    doc_info_body_template = %s,
+                    doc_read_method = %s,
+                    doc_read_url_template = %s,
+                    doc_read_body_template = %s,
+                    sheet_list_method = %s,
+                    sheet_list_url_template = %s,
+                    sheet_list_body_template = %s,
+                    sheet_range_method = %s,
+                    sheet_range_url_template = %s,
+                    sheet_range_body_template = %s,
+                    remark = %s
+                WHERE config_name = %s
+                """,
+                (
+                    values["operator_id"],
+                    values["doc_info_method"],
+                    values["doc_info_url_template"],
+                    values["doc_info_body_template"],
+                    values["doc_read_method"],
+                    values["doc_read_url_template"],
+                    values["doc_read_body_template"],
+                    values["sheet_list_method"],
+                    values["sheet_list_url_template"],
+                    values["sheet_list_body_template"],
+                    values["sheet_range_method"],
+                    values["sheet_range_url_template"],
+                    values["sheet_range_body_template"],
+                    values["remark"] or values["app_name"],
+                    name,
+                ),
+            )
+    return _doc_config_summary(values)
+
+
+def _map_dingtalk_config(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "configName": row.get("config_name"),
+        "appName": row.get("app_name"),
+        "appKey": row.get("app_key"),
+        "appSecret": row.get("app_secret"),
+        "authEndpoint": row.get("auth_endpoint"),
+        "tokenHeaderName": row.get("token_header_name"),
+        "operatorId": row.get("operator_id"),
+        "doc_infoMethod": row.get("doc_info_method"),
+        "doc_infoUrlTemplate": row.get("doc_info_url_template"),
+        "doc_infoBodyTemplate": _json_or_none(row.get("doc_info_body_template")),
+        "doc_readMethod": row.get("doc_read_method"),
+        "doc_readUrlTemplate": row.get("doc_read_url_template"),
+        "doc_readBodyTemplate": _json_or_none(row.get("doc_read_body_template")),
+        "sheet_listMethod": row.get("sheet_list_method"),
+        "sheet_listUrlTemplate": row.get("sheet_list_url_template"),
+        "sheet_listBodyTemplate": _json_or_none(row.get("sheet_list_body_template")),
+        "sheet_rangeMethod": row.get("sheet_range_method"),
+        "sheet_rangeUrlTemplate": row.get("sheet_range_url_template"),
+        "sheet_rangeBodyTemplate": _json_or_none(row.get("sheet_range_body_template")),
+        "accessToken": row.get("access_token"),
+        "tokenExpiresAt": row.get("token_expires_at"),
+        "remark": row.get("remark"),
+    }
+
+
+def _doc_config_values(config_name: str, current: dict[str, Any], changes: dict[str, Any]) -> dict[str, Any]:
+    app_name = _changed_value(changes, "app_name", current.get("app_name"))
+    if not app_name:
+        app_name = os.getenv("DINGTALK_APP_NAME") or "JDB小钉"
+    return {
+        "config_name": config_name,
+        "app_name": str(app_name).strip(),
+        "operator_id": _nullable_text(_changed_value(changes, "operator_id", current.get("operator_id"))),
+        "doc_info_method": _method_value(changes, current, "doc_info_method"),
+        "doc_info_url_template": _nullable_text(
+            _changed_value(changes, "doc_info_url_template", current.get("doc_info_url_template"))
+        ),
+        "doc_info_body_template": _json_text_or_none(
+            _changed_value(changes, "doc_info_body_template", current.get("doc_info_body_template"))
+        ),
+        "doc_read_method": _method_value(changes, current, "doc_read_method"),
+        "doc_read_url_template": _nullable_text(
+            _changed_value(changes, "doc_read_url_template", current.get("doc_read_url_template"))
+        ),
+        "doc_read_body_template": _json_text_or_none(
+            _changed_value(changes, "doc_read_body_template", current.get("doc_read_body_template"))
+        ),
+        "sheet_list_method": _method_value(changes, current, "sheet_list_method"),
+        "sheet_list_url_template": _nullable_text(
+            _changed_value(changes, "sheet_list_url_template", current.get("sheet_list_url_template"))
+        ),
+        "sheet_list_body_template": _json_text_or_none(
+            _changed_value(changes, "sheet_list_body_template", current.get("sheet_list_body_template"))
+        ),
+        "sheet_range_method": _method_value(changes, current, "sheet_range_method"),
+        "sheet_range_url_template": _nullable_text(
+            _changed_value(changes, "sheet_range_url_template", current.get("sheet_range_url_template"))
+        ),
+        "sheet_range_body_template": _json_text_or_none(
+            _changed_value(changes, "sheet_range_body_template", current.get("sheet_range_body_template"))
+        ),
+        "remark": _nullable_text(_changed_value(changes, "remark", current.get("remark"))),
+    }
+
+
+def _changed_value(changes: dict[str, Any], key: str, current: Any) -> Any:
+    return changes[key] if key in changes else current
+
+
+def _method_value(changes: dict[str, Any], current: dict[str, Any], key: str) -> str:
+    value = _changed_value(changes, key, current.get(key) or "GET")
+    return str(value or "GET").upper()
+
+
+def _nullable_text(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    return str(value).strip() or None
+
+
+def _json_text_or_none(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, str):
+        parsed = _json_or_none(value)
+        if isinstance(parsed, str):
+            return value
+        value = parsed
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _doc_config_tuple(values: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        values["config_name"],
+        values["app_name"],
+        values["operator_id"],
+        values["doc_info_method"],
+        values["doc_info_url_template"],
+        values["doc_info_body_template"],
+        values["doc_read_method"],
+        values["doc_read_url_template"],
+        values["doc_read_body_template"],
+        values["sheet_list_method"],
+        values["sheet_list_url_template"],
+        values["sheet_list_body_template"],
+        values["sheet_range_method"],
+        values["sheet_range_url_template"],
+        values["sheet_range_body_template"],
+        values["remark"],
+    )
+
+
+def _doc_config_summary(values: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "configName": values["config_name"],
+        "appName": values["app_name"],
+        "operatorIdSet": bool(values.get("operator_id")),
+        "operatorIdLength": len(values.get("operator_id") or ""),
+        "docInfoConfigured": bool(values.get("doc_info_url_template")),
+        "docReadConfigured": bool(values.get("doc_read_url_template")),
+        "sheetListConfigured": bool(values.get("sheet_list_url_template")),
+        "sheetRangeConfigured": bool(values.get("sheet_range_url_template")),
+        "remark": values.get("remark"),
+    }
+
+
+def _json_or_none(value: Any) -> Any:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return value

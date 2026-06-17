@@ -1,0 +1,512 @@
+# 云效 CI / Release 流水线与任务回写设计
+
+> 适用范围：Adapter MVP 当前已验证的低风险动作 `ssh.check_connectivity`，以及后续把“日常代码检查”和“正式交付执行”拆成两条云效流水线的生产化模板。
+>
+> 安全原则：CI 不执行 Adapter execute、不部署、不把云效任务置为完成；Release 必须人工触发/审批后才能 execute，并在 Status + Audit 复核通过后回写云效。
+
+## 1. 设计结论
+
+### 1.1 两条流水线分工
+
+| 流水线 | 触发方式 | 主链路 ID | 做什么 | 不做什么 | 回写口径 |
+| --- | --- | --- | --- | --- | --- |
+| CI Check | feature / req 分支提交自动触发 | `CI_ID=ci-${PIPELINE_ID}-${BUILD_NUMBER}` | 编译、测试、静态检查、可选 Adapter preview | 不部署、不 execute、不关闭任务 | 只回写检查结果评论或自定义字段；失败可标记“待处理/构建失败” |
+| Release Delivery | 手动触发 + 人工审批 | `DELIVERY_ID=rel-${REQUIREMENT_ID}-${BUILD_NUMBER}` | Release 预检、Adapter Preview/Audit、审批、Execute、Status、Final Audit | 不允许自动从提交触发 execute | 成功回写主需求“已发布/已完成”，并给关联任务追加发布结果；失败回写“发布失败/待处理” |
+
+### 1.2 主链路 ID 规则
+
+业务需求通常会拆多个云效任务，而且任务之间会交叉，所以正式上线不按单个任务建分支/执行，而是按需求或交付单聚合：
+
+```text
+REQUIREMENT_ID = 云效主需求工作项 ID
+DELIVERY_ID    = rel-${REQUIREMENT_ID}-${BUILD_NUMBER}
+TASK_ID        = ${DELIVERY_ID}
+CHILD_TASK_IDS = 关联任务 ID 列表，逗号分隔
+```
+
+CI 可以按构建号独立生成：
+
+```text
+CI_ID   = ci-${PIPELINE_ID}-${BUILD_NUMBER}
+TASK_ID = ${CI_ID}
+```
+
+### 1.3 变量分层
+
+| 变量 | CI | Release | 说明 |
+| --- | --- | --- | --- |
+| `DELIVERY_MODE` | `ci` | `release` | 防误触发硬门禁 |
+| `REQUIREMENT_ID` | 可选 | 必填 | 主需求/交付单工作项 ID |
+| `CHILD_TASK_IDS` | 可选 | 可选 | 子任务工作项 ID，逗号分隔 |
+| `TASK_ID` | 自动生成 | 自动生成 | Adapter 审计主键 |
+| `ADAPTER_API_TOKEN` | 如调用 Adapter 必填 | 必填 | 云效变量保存，禁止打印 |
+| `YUNXIAO_APPROVAL_ID` | 不允许 | 必填 | Release 人工审批后生成 |
+| `YUNXIAO_WRITEBACK_ENABLED` | 建议 false/灰度 | true | 回写开关 |
+| `YUNXIAO_TOKEN` | 回写时必填 | 回写时必填 | 云效 OpenAPI token，禁止打印 |
+| `YUNXIAO_ORG_ID` | 回写时必填 | 回写时必填 | 云效企业 ID |
+
+## 2. CI Check 流水线设计
+
+### 2.1 触发器
+
+- 分支：`feature/*`、`req-*`、`bugfix/*`。
+- 事件：代码提交 / MR 创建 / MR 更新。
+- 禁止：绑定生产环境部署、Adapter execute、任务完成回写。
+
+### 2.2 推荐节点
+
+```text
+代码源
+  -> 环境准备
+  -> Compile/Test
+  -> Static Check
+  -> Adapter Preview（可选，只做风险预览）
+  -> CI Result Writeback（可选，只写评论/检查状态）
+```
+
+### 2.3 节点脚本：环境准备
+
+```bash
+set -euo pipefail
+
+export DELIVERY_MODE="ci"
+export TASK_ID="ci-${PIPELINE_ID:-manual}-${BUILD_NUMBER:-0}"
+export OPERATOR="${BUILD_USER:-yunxiao}"
+
+echo "DELIVERY_MODE=${DELIVERY_MODE}"
+echo "TASK_ID=${TASK_ID}"
+```
+
+### 2.4 节点脚本：Compile/Test
+
+Java 项目示例：
+
+```bash
+set -euo pipefail
+
+mvn -B -DskipTests compile
+mvn -B test
+```
+
+如果是多模块仓库，建议把命令固化为仓库级 `ci-check.sh`，云效只调用脚本，避免每条流水线散落不同命令。
+
+### 2.5 节点脚本：Adapter Preview（可选）
+
+CI Preview 只验证请求和审计链路，不允许 execute：
+
+```bash
+set -euo pipefail
+
+: "${ADAPTER_API_TOKEN:?ADAPTER_API_TOKEN is required}"
+
+DELIVERY_MODE="ci"
+TASK_ID="ci-${PIPELINE_ID:-manual}-${BUILD_NUMBER:-0}"
+OPERATOR="${BUILD_USER:-yunxiao}"
+BASE_URL="${ADAPTER_BASE_URL:-http://47.116.102.238:18080}"
+HOST_ID="${ADAPTER_HOST_ID:-host-47-116-102-238}"
+
+if [ "${DELIVERY_MODE}" != "ci" ]; then
+  echo "CI pipeline can only run with DELIVERY_MODE=ci" >&2
+  exit 1
+fi
+
+curl -sS -X POST "${BASE_URL}/callbacks/yunxiao/task" \
+  -H "Authorization: Bearer ${ADAPTER_API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "taskId": "'"${TASK_ID}"'",
+    "operator": "'"${OPERATOR}"'",
+    "hostId": "'"${HOST_ID}"'",
+    "execute": false
+  }'
+
+echo ""
+```
+
+### 2.6 CI 阻断条件
+
+CI 失败即阻断 MR / 代码合并：
+
+- 编译失败。
+- 单元测试失败。
+- 静态检查失败。
+- Adapter Preview 返回非 `preview` 或 audit 查询不到 `PREVIEWED`（如果启用 Preview）。
+
+CI 成功也只代表“代码可进入评审/合并”，不代表“需求已交付完成”。
+
+## 3. Release Delivery 流水线设计
+
+### 3.1 触发器
+
+- 手动触发。
+- 只允许选择主需求/交付单 `REQUIREMENT_ID`。
+- 只允许目标分支：`develop`、`release/*` 或约定发布分支。
+- 必须经过人工审批节点。
+
+### 3.2 推荐节点
+
+```text
+手动触发参数
+  -> Release 参数校验
+  -> Release Compile/Test
+  -> Adapter Preview
+  -> Adapter Audit Preview 验证
+  -> 人工审批
+  -> Adapter Execute
+  -> Adapter Status 验证
+  -> Adapter Final Audit 复核
+  -> 云效任务回写
+```
+
+### 3.3 Release 参数校验节点
+
+```bash
+set -euo pipefail
+
+: "${REQUIREMENT_ID:?REQUIREMENT_ID is required for release}"
+
+export DELIVERY_MODE="release"
+export DELIVERY_ID="rel-${REQUIREMENT_ID}-${BUILD_NUMBER:-0}"
+export TASK_ID="${DELIVERY_ID}"
+export OPERATOR="${BUILD_USER:-yunxiao}"
+
+case "${BRANCH_NAME:-}" in
+  develop|release/*|master|main) ;;
+  *)
+    echo "Release pipeline cannot run on branch: ${BRANCH_NAME:-unknown}" >&2
+    exit 1
+    ;;
+esac
+
+echo "DELIVERY_MODE=${DELIVERY_MODE}"
+echo "REQUIREMENT_ID=${REQUIREMENT_ID}"
+echo "TASK_ID=${TASK_ID}"
+if [ -n "${CHILD_TASK_IDS:-}" ]; then
+  echo "CHILD_TASK_IDS=${CHILD_TASK_IDS}"
+fi
+```
+
+### 3.4 Adapter Preview 节点
+
+```bash
+set -euo pipefail
+
+: "${ADAPTER_API_TOKEN:?ADAPTER_API_TOKEN is required}"
+: "${REQUIREMENT_ID:?REQUIREMENT_ID is required}"
+
+DELIVERY_MODE="release"
+TASK_ID="rel-${REQUIREMENT_ID}-${BUILD_NUMBER:-0}"
+OPERATOR="${BUILD_USER:-yunxiao}"
+BASE_URL="${ADAPTER_BASE_URL:-http://47.116.102.238:18080}"
+HOST_ID="${ADAPTER_HOST_ID:-host-47-116-102-238}"
+
+echo "TASK_ID=${TASK_ID}"
+echo "=== Adapter release preview ==="
+
+curl -sS -X POST "${BASE_URL}/callbacks/yunxiao/task" \
+  -H "Authorization: Bearer ${ADAPTER_API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "taskId": "'"${TASK_ID}"'",
+    "operator": "'"${OPERATOR}"'",
+    "hostId": "'"${HOST_ID}"'",
+    "execute": false
+  }'
+
+echo ""
+```
+
+### 3.5 Adapter Audit Preview 验证节点
+
+```bash
+set -euo pipefail
+
+: "${ADAPTER_API_TOKEN:?ADAPTER_API_TOKEN is required}"
+: "${REQUIREMENT_ID:?REQUIREMENT_ID is required}"
+
+TASK_ID="rel-${REQUIREMENT_ID}-${BUILD_NUMBER:-0}"
+BASE_URL="${ADAPTER_BASE_URL:-http://47.116.102.238:18080}"
+
+echo "TASK_ID=${TASK_ID}"
+echo "=== Adapter preview audit ==="
+
+AUDIT_JSON=$(curl -sS \
+  -H "Authorization: Bearer ${ADAPTER_API_TOKEN}" \
+  "${BASE_URL}/adapter/audit/${TASK_ID}")
+
+echo "${AUDIT_JSON}"
+
+echo "${AUDIT_JSON}" | grep -q '"event"[[:space:]]*:[[:space:]]*"preview"'
+echo "${AUDIT_JSON}" | grep -q '"status"[[:space:]]*:[[:space:]]*"PREVIEWED"'
+```
+
+### 3.6 人工审批节点
+
+审批节点通过后，后续 Execute 节点重新按同一规则生成审批号，避免 Shell 节点变量不跨节点：
+
+```text
+YUNXIAO_APPROVAL_ID=yx-approval-${REQUIREMENT_ID}-${BUILD_NUMBER}
+```
+
+审批页面必须展示：
+
+- 主需求：`REQUIREMENT_ID`。
+- 子任务：`CHILD_TASK_IDS`。
+- 本次发布分支/commit/MR。
+- Adapter Preview 与 Audit 结果。
+- 风险等级与执行动作。
+
+### 3.7 Adapter Execute 节点
+
+```bash
+set -euo pipefail
+
+: "${ADAPTER_API_TOKEN:?ADAPTER_API_TOKEN is required}"
+: "${REQUIREMENT_ID:?REQUIREMENT_ID is required}"
+
+DELIVERY_MODE="release"
+TASK_ID="rel-${REQUIREMENT_ID}-${BUILD_NUMBER:-0}"
+OPERATOR="${BUILD_USER:-yunxiao}"
+YUNXIAO_APPROVAL_ID="yx-approval-${REQUIREMENT_ID}-${BUILD_NUMBER:-0}"
+BASE_URL="${ADAPTER_BASE_URL:-http://47.116.102.238:18080}"
+HOST_ID="${ADAPTER_HOST_ID:-host-47-116-102-238}"
+
+if [ "${DELIVERY_MODE}" != "release" ]; then
+  echo "Execute can only run with DELIVERY_MODE=release" >&2
+  exit 1
+fi
+
+echo "TASK_ID=${TASK_ID}"
+echo "YUNXIAO_APPROVAL_ID=${YUNXIAO_APPROVAL_ID}"
+echo "=== Adapter release execute ==="
+
+curl -sS -X POST "${BASE_URL}/callbacks/yunxiao/task" \
+  -H "Authorization: Bearer ${ADAPTER_API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "taskId": "'"${TASK_ID}"'",
+    "operator": "'"${OPERATOR}"'",
+    "hostId": "'"${HOST_ID}"'",
+    "execute": true,
+    "approvalId": "'"${YUNXIAO_APPROVAL_ID}"'"
+  }'
+
+echo ""
+```
+
+### 3.8 Adapter Status 验证节点
+
+```bash
+set -euo pipefail
+
+: "${ADAPTER_API_TOKEN:?ADAPTER_API_TOKEN is required}"
+: "${REQUIREMENT_ID:?REQUIREMENT_ID is required}"
+
+TASK_ID="rel-${REQUIREMENT_ID}-${BUILD_NUMBER:-0}"
+BASE_URL="${ADAPTER_BASE_URL:-http://47.116.102.238:18080}"
+
+STATUS_JSON=$(curl -sS \
+  -H "Authorization: Bearer ${ADAPTER_API_TOKEN}" \
+  "${BASE_URL}/adapter/status/${TASK_ID}")
+
+echo "${STATUS_JSON}"
+echo "${STATUS_JSON}" | grep -q '"status"[[:space:]]*:[[:space:]]*"SUCCESS"'
+```
+
+### 3.9 Adapter Final Audit 复核节点
+
+```bash
+set -euo pipefail
+
+: "${ADAPTER_API_TOKEN:?ADAPTER_API_TOKEN is required}"
+: "${REQUIREMENT_ID:?REQUIREMENT_ID is required}"
+
+TASK_ID="rel-${REQUIREMENT_ID}-${BUILD_NUMBER:-0}"
+BASE_URL="${ADAPTER_BASE_URL:-http://47.116.102.238:18080}"
+
+AUDIT_JSON=$(curl -sS \
+  -H "Authorization: Bearer ${ADAPTER_API_TOKEN}" \
+  "${BASE_URL}/adapter/audit/${TASK_ID}")
+
+echo "${AUDIT_JSON}"
+echo "${AUDIT_JSON}" | grep -q '"event"[[:space:]]*:[[:space:]]*"preview"'
+echo "${AUDIT_JSON}" | grep -q '"event"[[:space:]]*:[[:space:]]*"execute"'
+echo "${AUDIT_JSON}" | grep -q '"event"[[:space:]]*:[[:space:]]*"status"'
+echo "${AUDIT_JSON}" | grep -q '"status"[[:space:]]*:[[:space:]]*"SUCCESS"'
+```
+
+## 4. 云效任务回写设计
+
+### 4.1 回写对象
+
+| 对象 | Release 成功 | Release 失败 | CI 成功/失败 |
+| --- | --- | --- | --- |
+| 主需求 `REQUIREMENT_ID` | 追加发布成功评论；状态可推进到“已发布/已完成” | 追加失败评论；状态回退或保持“发布中/待处理” | 不关闭；可追加最近一次 CI 结果 |
+| 子任务 `CHILD_TASK_IDS` | 追加“随主需求发布成功”评论；必要时推进状态 | 追加失败原因 | 不关闭 |
+| MR/代码分支 | 记录构建号、commit、流水线 URL | 记录失败节点 | CI 必须关联 MR 状态 |
+
+### 4.2 回写内容模板
+
+Release 成功：
+
+```text
+【Adapter Release 回写】
+结果：发布成功
+主链路：${TASK_ID}
+流水线：${PIPELINE_ID}/${BUILD_NUMBER}
+分支：${BRANCH_NAME}
+提交：${COMMIT_ID}
+Adapter Status：SUCCESS
+审计：preview + execute + status 已复核
+```
+
+Release 失败：
+
+```text
+【Adapter Release 回写】
+结果：发布失败
+主链路：${TASK_ID}
+流水线：${PIPELINE_ID}/${BUILD_NUMBER}
+失败节点：${FAILED_STAGE}
+失败原因：${FAILED_REASON}
+处理建议：保持任务未完成，修复后重新触发 Release
+```
+
+CI 结果：
+
+```text
+【CI Check 回写】
+结果：${CI_RESULT}
+流水线：${PIPELINE_ID}/${BUILD_NUMBER}
+分支：${BRANCH_NAME}
+提交：${COMMIT_ID}
+说明：CI 只表示代码检查结果，不代表需求已交付完成。
+```
+
+### 4.3 OpenAPI 回写方式
+
+官方云效 OpenAPI 有工作项更新接口 `UpdateWorkItem`，请求路径为：
+
+```text
+POST /organization/{organizationId}/workitems/update
+```
+
+常用字段包括：
+
+```text
+identifier    = 工作项 ID
+propertyKey   = 要更新的字段 identifier
+propertyValue = 更新后的值
+fieldType     = 字段类型
+```
+
+评论可使用工作项评论相关接口；实际是否允许直接更新状态、状态字段 identifier 是什么，需要以本企业云效项目的工作项字段配置为准。
+
+因此 MVP 回写分两阶段：
+
+1. 第一阶段：只追加评论/备注，不改工作项状态，降低误操作风险。
+2. 第二阶段：拿到字段 identifier 后，再打开状态流转回写；状态回写必须由 Release 成功节点触发，CI 不允许触发。
+
+### 4.4 回写节点脚本模板
+
+> 该模板默认 dry-run；只有 `YUNXIAO_WRITEBACK_ENABLED=true` 才发起 OpenAPI 调用。鉴权方式按企业实际云效 OpenAPI 配置调整，禁止在日志打印 token。
+
+```bash
+set -euo pipefail
+
+: "${REQUIREMENT_ID:?REQUIREMENT_ID is required}"
+: "${YUNXIAO_ORG_ID:?YUNXIAO_ORG_ID is required}"
+: "${YUNXIAO_TOKEN:?YUNXIAO_TOKEN is required}"
+
+DELIVERY_MODE="${DELIVERY_MODE:-release}"
+TASK_ID="rel-${REQUIREMENT_ID}-${BUILD_NUMBER:-0}"
+PIPELINE_RUN="${PIPELINE_ID:-manual}/${BUILD_NUMBER:-0}"
+BASE_URL="${YUNXIAO_OPENAPI_BASE_URL:-https://devops.cn-hangzhou.aliyuncs.com}"
+WRITEBACK_ENABLED="${YUNXIAO_WRITEBACK_ENABLED:-false}"
+RESULT="${RELEASE_RESULT:-SUCCESS}"
+COMMENT="【Adapter Release 回写】结果：${RESULT}; 主链路：${TASK_ID}; 流水线：${PIPELINE_RUN}; 审计：preview+execute+status已复核"
+
+if [ "${DELIVERY_MODE}" != "release" ]; then
+  echo "Skip status writeback: DELIVERY_MODE=${DELIVERY_MODE}"
+  exit 0
+fi
+
+echo "writeback target=${REQUIREMENT_ID}"
+echo "writeback enabled=${WRITEBACK_ENABLED}"
+
+if [ "${WRITEBACK_ENABLED}" != "true" ]; then
+  echo "dry-run comment=${COMMENT}"
+  exit 0
+fi
+
+curl -sS -X POST "${BASE_URL}/organization/${YUNXIAO_ORG_ID}/workitems/update" \
+  -H "Authorization: Bearer ${YUNXIAO_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "identifier": "'"${REQUIREMENT_ID}"'",
+    "propertyKey": "'"${YUNXIAO_WRITEBACK_FIELD:-description}"'",
+    "propertyValue": "'"${COMMENT}"'",
+    "fieldType": "'"${YUNXIAO_WRITEBACK_FIELD_TYPE:-text}"'"
+  }'
+
+echo ""
+```
+
+### 4.5 子任务回写策略
+
+如果 `CHILD_TASK_IDS` 不为空，Release 成功后逐个追加说明：
+
+```bash
+IFS=',' read -r -a CHILDREN <<< "${CHILD_TASK_IDS:-}"
+for CHILD_ID in "${CHILDREN[@]}"; do
+  CHILD_ID="$(echo "${CHILD_ID}" | xargs)"
+  [ -z "${CHILD_ID}" ] && continue
+  echo "writeback child task=${CHILD_ID}"
+  # 调用同一回写函数；第一阶段建议只写评论，不改状态。
+done
+```
+
+### 4.6 状态字段门禁
+
+在未确认云效字段 identifier 前，禁止把脚本默认字段设置为“完成状态”。需要先通过字段列表/项目配置确认：
+
+- 状态字段 identifier。
+- “已完成/已发布”的合法值。
+- 当前状态是否允许流转到目标状态。
+- 回写 token 是否有对应项目权限。
+
+## 5. 防误触发门禁
+
+### 5.1 CI 防误触发
+
+- `DELIVERY_MODE=ci`。
+- 脚本中不允许出现 `execute=true`。
+- 不允许生成 `YUNXIAO_APPROVAL_ID`。
+- 不允许回写“已完成/已发布”。
+
+### 5.2 Release 防误触发
+
+- 必须手动触发。
+- 必须填写 `REQUIREMENT_ID`。
+- 必须通过人工审批。
+- Execute 前必须查到同一 `TASK_ID` 的 preview audit。
+- Execute 后必须 Status=SUCCESS。
+- Final Audit 必须同时包含 preview/execute/status。
+- 回写启用前必须先 dry-run 一次。
+
+## 6. 落地顺序
+
+1. 先创建 CI Check 流水线，只跑编译/测试/静态检查。
+2. CI 增加可选 Adapter Preview，不 execute。
+3. 创建 Release Delivery 流水线，复用昨天已验证的 Adapter 闭环。
+4. Release 增加 Final Audit 强校验。
+5. 云效任务回写先 dry-run，确认目标工作项和字段。
+6. 第一阶段启用评论回写。
+7. 第二阶段再启用状态流转回写。
+
+## 7. 当前 MVP 边界
+
+- 当前 Adapter 真实 execute 仅验证 `ssh.check_connectivity`。
+- 当前云效 OpenAPI 回写字段尚未在本企业项目中实测，状态字段 identifier 需补一次字段探测。
+- 不在 CI 中做生产部署或任务完成回写。
+- 不在没有审批的 Release 中调用 execute。

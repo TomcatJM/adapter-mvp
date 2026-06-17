@@ -1,0 +1,375 @@
+from typing import Any
+
+from fastapi import Depends, FastAPI, HTTPException
+from pydantic import BaseModel, Field
+
+from app import db
+from app.apifox import OpenapiValidationError, fetch_sanitized_openapi, maybe_import_from_flow_event
+from app.auth import require_api_token, require_execute_approval
+from app.dingtalk_docs import DingTalkDocError, read_dingtalk_doc, resolve_dingtalk_operator
+from app.audit import (
+    find_by_task_id,
+    log_apifox_import,
+    log_execute,
+    log_pipeline_failure,
+    log_preview,
+    log_status,
+)
+from app.models import (
+    AdapterRequest,
+    AdapterResult,
+    AdapterStatus,
+    YunxiaoPipelineFailureCallback,
+    YunxiaoTaskCallback,
+)
+from app.pipeline_agent import analyze_pipeline_failure
+from app.registry import registry
+from app.status_store import status_store
+
+
+app = FastAPI(title="Adapter MVP", version="0.1.0")
+
+YUNXIAO_FLOW_EVENT_PATH = "/callbacks/yunxiao/flow-event"
+YUNXIAO_FLOW_EVENT_PUBLIC_PATH = "/callbacks/yunxiao/flow-event/public"
+
+
+class DingTalkDocReadRequest(BaseModel):
+    url: str | None = Field(default=None, description="DingTalk/Alidocs URL")
+    nodeId: str | None = Field(default=None, description="DingTalk/Alidocs node id")
+    workbookId: str | None = Field(default=None, description="Explicit workbook id for axls docs")
+    configName: str | None = Field(default=None, description="DingTalk app config name")
+    kind: str | None = Field(default=None, description="Document kind: adoc or axls")
+    sheetId: str | None = Field(default=None, description="Sheet id for axls docs")
+    range: str = Field(default="A1:J50", description="Sheet range for axls docs")
+    timeout: int = Field(default=60, ge=5, le=180)
+
+
+class DingTalkDocConfigRequest(BaseModel):
+    configName: str = Field(default="default", description="DingTalk document config name")
+    appName: str | None = Field(default=None, description="Existing DingTalk app name")
+    operatorId: str | None = Field(default=None, description="DingTalk userId used to read documents")
+    docInfoMethod: str | None = None
+    docInfoUrlTemplate: str | None = None
+    docInfoBodyTemplate: dict[str, Any] | list[Any] | str | None = None
+    docReadMethod: str | None = None
+    docReadUrlTemplate: str | None = None
+    docReadBodyTemplate: dict[str, Any] | list[Any] | str | None = None
+    sheetListMethod: str | None = None
+    sheetListUrlTemplate: str | None = None
+    sheetListBodyTemplate: dict[str, Any] | list[Any] | str | None = None
+    sheetRangeMethod: str | None = None
+    sheetRangeUrlTemplate: str | None = None
+    sheetRangeBodyTemplate: dict[str, Any] | list[Any] | str | None = None
+    remark: str | None = None
+
+
+class DingTalkResolveOperatorRequest(BaseModel):
+    userId: str = Field(description="DingTalk contact userId to resolve")
+    configName: str | None = Field(default=None, description="DingTalk document config name")
+    timeout: int = Field(default=60, ge=5, le=180)
+    updateConfig: bool = Field(default=False, description="Write resolved unionId back as operatorId")
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/adapter/openapi/{project_name}")
+def adapter_openapi(project_name: str):
+    try:
+        return fetch_sanitized_openapi(project_name)
+    except OpenapiValidationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/adapter/dingtalk/read", dependencies=[Depends(require_api_token)])
+def adapter_dingtalk_read(request: DingTalkDocReadRequest):
+    try:
+        return read_dingtalk_doc(
+            url=request.url,
+            node_id=request.nodeId,
+            sheet_id=request.sheetId,
+            workbook_id=request.workbookId,
+            cell_range=request.range,
+            timeout=request.timeout,
+            config_name=request.configName,
+            kind=request.kind,
+        )
+    except DingTalkDocError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/adapter/dingtalk/config", dependencies=[Depends(require_api_token)])
+def adapter_dingtalk_config(request: DingTalkDocConfigRequest):
+    try:
+        return {
+            "ok": True,
+            "config": db.upsert_dingtalk_doc_config(
+                request.configName,
+                _dingtalk_config_changes(request),
+            ),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/adapter/dingtalk/resolve-operator", dependencies=[Depends(require_api_token)])
+def adapter_dingtalk_resolve_operator(request: DingTalkResolveOperatorRequest):
+    try:
+        result = resolve_dingtalk_operator(
+            user_id=request.userId,
+            config_name=request.configName,
+            timeout=request.timeout,
+        )
+        response: dict[str, Any] = {
+            "ok": True,
+            "configName": result["configName"],
+            "appName": result.get("appName"),
+            "userId": result["userId"],
+            "unionId": result["unionId"],
+        }
+        if request.updateConfig:
+            response["config"] = db.upsert_dingtalk_doc_config(
+                result["configName"],
+                {"operator_id": result["unionId"]},
+            )
+        return response
+    except DingTalkDocError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/adapter/preview", dependencies=[Depends(require_api_token)])
+def preview(request: AdapterRequest):
+    try:
+        adapter = registry.find(request.system, request.action)
+        result = adapter.preview(request)
+        log_preview(request, result)
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/adapter/execute", response_model=AdapterResult, dependencies=[Depends(require_api_token)])
+def execute(request: AdapterRequest):
+    try:
+        require_execute_approval(request.params)
+        adapter = registry.find(request.system, request.action)
+        result = adapter.execute(request)
+        status_store.put(result)
+        log_execute(request, result)
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/adapter/status/{task_id}", response_model=AdapterStatus, dependencies=[Depends(require_api_token)])
+def status(task_id: str):
+    result = status_store.get(task_id)
+    log_status(task_id, result)
+    return result
+
+
+@app.get("/adapter/audit/{task_id}", dependencies=[Depends(require_api_token)])
+def audit(task_id: str, limit: int = 50):
+    safe_limit = max(1, min(limit, 200))
+    return {"taskId": task_id, "items": find_by_task_id(task_id, safe_limit)}
+
+
+@app.post("/callbacks/yunxiao/task", dependencies=[Depends(require_api_token)])
+def yunxiao_task_callback(callback: YunxiaoTaskCallback):
+    params = {
+        **callback.params,
+        "hostId": callback.host_id,
+    }
+    if callback.approval_id:
+        params["approvalId"] = callback.approval_id
+    if callback.approved:
+        params["approved"] = True
+
+    request = AdapterRequest(
+        taskId=callback.task_id,
+        operator=callback.operator,
+        system="ssh",
+        action="check_connectivity",
+        env=callback.env,
+        params=params,
+    )
+    adapter = registry.find(request.system, request.action)
+    if not callback.execute:
+        result = adapter.preview(request)
+        log_preview(request, result)
+        return {
+            "source": "yunxiao",
+            "mode": "preview",
+            "adapter": result,
+        }
+
+    require_execute_approval(request.params)
+    result = adapter.execute(request)
+    status_store.put(result)
+    log_execute(request, result)
+    return {
+        "source": "yunxiao",
+        "mode": "execute",
+        "adapter": result,
+    }
+
+
+@app.post("/callbacks/yunxiao/pipeline-failure", dependencies=[Depends(require_api_token)])
+def yunxiao_pipeline_failure_callback(callback: YunxiaoPipelineFailureCallback):
+    analysis = analyze_pipeline_failure(callback.log_tail, callback.stage_name)
+    log_pipeline_failure(callback, analysis)
+    return {
+        "source": "yunxiao",
+        "mode": "pipeline_failure",
+        "taskId": callback.task_id,
+        "pipelineId": callback.pipeline_id,
+        "buildNumber": callback.build_number,
+        "stageName": callback.stage_name,
+        "analysis": analysis,
+    }
+
+
+@app.post(YUNXIAO_FLOW_EVENT_PATH, dependencies=[Depends(require_api_token)])
+def yunxiao_flow_event(payload: dict[str, Any]):
+    return _handle_flow_event(payload)
+
+
+@app.post(YUNXIAO_FLOW_EVENT_PUBLIC_PATH)
+def yunxiao_flow_event_public(payload: dict[str, Any]):
+    return _handle_flow_event(payload)
+
+
+def _handle_flow_event(payload: dict[str, Any]) -> dict[str, Any]:
+    status_code = str(_pick(_task_payload(payload), "statusCode", "status_code", "status", default="")).upper()
+    if status_code in {"SUCCESS", "FINISH"}:
+        callback = _normalize_flow_event(payload)
+        result = maybe_import_from_flow_event(payload)
+        log_apifox_import(callback.task_id, callback.operator, result)
+        return {
+            "source": "yunxiao",
+            "mode": "flow_event",
+            "statusCode": status_code,
+            "taskId": callback.task_id,
+            "pipelineId": callback.pipeline_id,
+            "buildNumber": callback.build_number,
+            "stageName": callback.stage_name,
+            "apifox": result,
+        }
+    if status_code not in {"FAIL", "FAILED", "ERROR", "CANCELED", "CANCELLED", "CANCELLING", "UNKNOWN", "UNKOWN"}:
+        return {
+            "source": "yunxiao",
+            "mode": "flow_event",
+            "ignored": True,
+            "statusCode": status_code,
+            "reason": "non-failure status",
+        }
+
+    callback = _normalize_flow_event(payload)
+    analysis = analyze_pipeline_failure(callback.log_tail, callback.stage_name)
+    log_pipeline_failure(callback, analysis)
+    return {
+        "source": "yunxiao",
+        "mode": "flow_event",
+        "taskId": callback.task_id,
+        "pipelineId": callback.pipeline_id,
+        "buildNumber": callback.build_number,
+        "stageName": callback.stage_name,
+        "analysis": analysis,
+    }
+
+
+def _normalize_flow_event(payload: dict[str, Any]) -> YunxiaoPipelineFailureCallback:
+    task = _task_payload(payload)
+    params = _params_payload(payload)
+    source = _source_payload(payload)
+    pipeline_id = _pick(task, "pipelineId", "pipeline_id", "pipelineID", "flowId", "flow_id", default="unknown")
+    build_number = _pick(task, "buildNumber", "build_number", "buildNo", "build_no", "runId", "run_id", default="0")
+    requirement_id = _pick(params, "REQUIREMENT_ID", "requirementId", "requirement_id", "workitemId", "workitem_id", "taskId", "task_id")
+    task_id = _pick(params, "TASK_ID", "taskId", "task_id")
+    if not task_id and requirement_id:
+        task_id = f"rel-{requirement_id}-{build_number}"
+    if not task_id:
+        task_id = f"yx-flow-{pipeline_id}-{build_number}"
+    return YunxiaoPipelineFailureCallback(
+        taskId=task_id,
+        pipelineId=str(pipeline_id),
+        buildNumber=str(build_number),
+        stageName=str(_pick(task, "stageName", "stage_name", default="yunxiao-flow-event"))
+        + "/"
+        + str(_pick(task, "taskName", "task_name", default="unknown-task")),
+        branchName=_pick(source, "branchName", "branch_name", "branch"),
+        commitId=_pick(source, "commitId", "commit_id", "commit"),
+        operator=str(_pick(params, "BUILD_USER", "operator", "triggerUser", "trigger_user", "buildUser", "build_user", default="yunxiao")),
+        exitCode=1,
+        logTail=str(_pick(task, "message", "statusName", "status_name", default="")),
+        logUrl=_pick(task, "pipelineUrl", "pipeline_url", "logUrl", "log_url", "url", "detailUrl", "detail_url"),
+        params=payload,
+    )
+
+
+def _pick(payload: dict[str, Any], *keys: str, default: Any = None) -> Any:
+    for key in keys:
+        value = payload.get(key)
+        if value not in (None, ""):
+            return value
+    return default
+
+
+def _dingtalk_config_changes(request: DingTalkDocConfigRequest) -> dict[str, Any]:
+    field_map = {
+        "appName": "app_name",
+        "operatorId": "operator_id",
+        "docInfoMethod": "doc_info_method",
+        "docInfoUrlTemplate": "doc_info_url_template",
+        "docInfoBodyTemplate": "doc_info_body_template",
+        "docReadMethod": "doc_read_method",
+        "docReadUrlTemplate": "doc_read_url_template",
+        "docReadBodyTemplate": "doc_read_body_template",
+        "sheetListMethod": "sheet_list_method",
+        "sheetListUrlTemplate": "sheet_list_url_template",
+        "sheetListBodyTemplate": "sheet_list_body_template",
+        "sheetRangeMethod": "sheet_range_method",
+        "sheetRangeUrlTemplate": "sheet_range_url_template",
+        "sheetRangeBodyTemplate": "sheet_range_body_template",
+        "remark": "remark",
+    }
+    supplied = request.model_fields_set
+    return {
+        target: getattr(request, source)
+        for source, target in field_map.items()
+        if source in supplied
+    }
+
+
+def _task_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    task = payload.get("task")
+    return task if isinstance(task, dict) else payload
+
+
+def _source_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    sources = payload.get("sources")
+    if isinstance(sources, list) and sources and isinstance(sources[0], dict):
+        return sources[0]
+    return payload
+
+
+def _params_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    global_params = payload.get("globalParams")
+    if isinstance(global_params, list):
+        for item in global_params:
+            if not isinstance(item, dict):
+                continue
+            key = item.get("key")
+            if key:
+                result[str(key)] = item.get("value")
+    result.update(payload)
+    return result

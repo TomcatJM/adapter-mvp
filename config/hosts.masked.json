@@ -1,0 +1,11 @@
+{
+  "hosts": [
+    {
+      "hostId": "host-47-116-102-238",
+      "platform": "腾讯",
+      "ip": "47.116.102.238",
+      "account": "root",
+      "passwordRef": "HOST_HOST_47_116_102_238_PASSWORD"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+defaults:
+  allow_execute: false
+  need_approval: true
+
+actions:
+  ssh:
+    check_connectivity:
+      dev:
+        allow_execute: false
+        need_approval: false
+      uat:
+        allow_execute: false
+        need_approval: true
+      prod:
+        allow_execute: false
+        need_approval: true
+
