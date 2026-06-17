@@ -447,7 +447,7 @@ adapter_audit
 建表脚本：
 
 ```text
-scripts/mysql_schema.sql
+sql/mysql_schema.sql
 ```
 
 初始化：

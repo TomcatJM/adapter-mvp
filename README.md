@@ -255,6 +255,10 @@ GET /adapter/audit/{task_id}
 
 ## 10. 远端运维脚本
 
+`.ps1` 是 Windows PowerShell 辅助脚本，不是服务运行必需文件。`remote_restart.ps1` 会调用
+`scripts/remote_ops.py restart`，用于在 Windows 机器上按 Excel 主机清单触发远端重启；Linux/macOS
+可以直接使用 Python 或 SSH 运维方式。
+
 ```powershell
 .\scripts\remote_status.ps1
 .\scripts\remote_tail_audit.ps1 -Lines 30
@@ -272,7 +276,7 @@ python scripts\init_mysql_schema.py --source D:\document\up\mysql.xlsx
 如果运行时数据库账号没有 `CREATE` 权限，请让 DBA 执行：
 
 ```text
-scripts/mysql_schema.sql
+sql/mysql_schema.sql
 ```
 
 ## 12. 文档入口

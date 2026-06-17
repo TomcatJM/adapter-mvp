@@ -223,7 +223,7 @@ adapter_audit
 If the configured DB user cannot create tables, ask DBA to run:
 
 ```text
-scripts/mysql_schema.sql
+sql/mysql_schema.sql
 ```
 
 Or initialize with a user that has `CREATE` privilege:
