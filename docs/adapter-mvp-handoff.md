@@ -243,7 +243,7 @@ Authorization: Bearer <ADAPTER_API_TOKEN>
 Content-Type: application/json
 ```
 
-用途：Adapter 使用数据库中的钉钉应用凭据和文档 API endpoint 模板，直接读取 `alidocs.dingtalk.com/i/nodes/<nodeId>` 文档或表格，供 Codex 后续查看钉钉文档时自动调用。不要依赖 OpenClaw / `dws`，也不要改成浏览器抓取。
+用途：Adapter 使用数据库中的钉钉应用凭据和文档 API endpoint 模板，优先读取 `alidocs.dingtalk.com/i/nodes/<nodeId>` 文档或表格，供 Codex 后续查看钉钉文档时自动调用。如果 Adapter 不可用或读取失败，Codex 可以降级到 OpenClaw / `dws`，但必须明确提示当前使用 `OpenClaw fallback`。不要改成浏览器抓取。
 
 配置表：
 

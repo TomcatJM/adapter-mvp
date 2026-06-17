@@ -121,3 +121,43 @@ CREATE TABLE IF NOT EXISTS adapter_dingtalk_doc_config (
     UNIQUE KEY uk_adapter_dingtalk_doc_config_name (config_name),
     KEY idx_adapter_dingtalk_doc_app_name (app_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter钉钉文档读取配置表';
+
+CREATE TABLE IF NOT EXISTS adapter_workflow_instance (
+    workflow_id VARCHAR(64) PRIMARY KEY COMMENT '工作流实例ID',
+    requirement_key VARCHAR(128) NULL COMMENT '需求唯一键，可来自钉钉节点或云效工作项',
+    dingtalk_url VARCHAR(2048) NOT NULL COMMENT '钉钉/Alidocs需求文档URL',
+    dingtalk_node_id VARCHAR(256) NULL COMMENT '钉钉文档节点ID',
+    yunxiao_task_id VARCHAR(128) NULL COMMENT '云效主任务ID',
+    yunxiao_pipeline_id VARCHAR(128) NULL COMMENT '云效流水线ID',
+    yunxiao_build_number VARCHAR(128) NULL COMMENT '云效构建号',
+    repo_url VARCHAR(1024) NULL COMMENT '代码仓库地址',
+    branch_name VARCHAR(256) NULL COMMENT '实现分支',
+    commit_id VARCHAR(128) NULL COMMENT '提交ID',
+    apifox_project_id VARCHAR(128) NULL COMMENT 'Apifox项目ID',
+    status VARCHAR(64) NOT NULL COMMENT '工作流状态',
+    retry_count INT NOT NULL DEFAULT 0 COMMENT '当前步骤重试次数',
+    last_error VARCHAR(2048) NULL COMMENT '最近错误',
+    context_json JSON NULL COMMENT '安全上下文JSON',
+    created_by VARCHAR(128) NULL COMMENT '创建人',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY uk_adapter_workflow_requirement_key (requirement_key),
+    KEY idx_adapter_workflow_status (status),
+    KEY idx_adapter_workflow_yunxiao_task_id (yunxiao_task_id),
+    KEY idx_adapter_workflow_pipeline (yunxiao_pipeline_id, yunxiao_build_number)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter交付工作流实例表';
+
+CREATE TABLE IF NOT EXISTS adapter_workflow_event (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
+    workflow_id VARCHAR(64) NOT NULL COMMENT '工作流实例ID',
+    event_type VARCHAR(64) NOT NULL COMMENT '事件类型',
+    from_status VARCHAR(64) NULL COMMENT '变更前状态',
+    to_status VARCHAR(64) NULL COMMENT '变更后状态',
+    operator VARCHAR(128) NULL COMMENT '操作人或系统',
+    message VARCHAR(1024) NULL COMMENT '事件说明',
+    payload_json JSON NULL COMMENT '安全事件载荷',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    KEY idx_adapter_workflow_event_workflow_id (workflow_id),
+    KEY idx_adapter_workflow_event_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter交付工作流事件表';

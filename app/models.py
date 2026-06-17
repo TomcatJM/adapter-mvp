@@ -67,3 +67,52 @@ class YunxiaoPipelineFailureCallback(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {"populate_by_name": True}
+
+
+class WorkflowStartRequest(BaseModel):
+    dingtalk_url: str = Field(alias="dingtalkUrl")
+    requirement_key: str | None = Field(default=None, alias="requirementKey")
+    repo_url: str | None = Field(default=None, alias="repoUrl")
+    branch_name: str | None = Field(default=None, alias="branchName")
+    operator: str = "codex"
+    context: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"populate_by_name": True}
+
+
+class WorkflowAdvanceRequest(BaseModel):
+    operator: str = "codex"
+    config_name: str | None = Field(default=None, alias="configName")
+    kind: str | None = None
+    sheet_id: str | None = Field(default=None, alias="sheetId")
+    workbook_id: str | None = Field(default=None, alias="workbookId")
+    range: str = "A1:J50"
+    timeout: int = Field(default=60, ge=5, le=180)
+
+    model_config = {"populate_by_name": True}
+
+
+class WorkflowRequirementRequest(BaseModel):
+    operator: str = "codex"
+    summary: str
+    acceptance_criteria: list[str] = Field(default_factory=list, alias="acceptanceCriteria")
+    affected_repos: list[str] = Field(default_factory=list, alias="affectedRepos")
+    api_changes: list[dict[str, Any]] = Field(default_factory=list, alias="apiChanges")
+    test_scope: list[str] = Field(default_factory=list, alias="testScope")
+    risk: str | None = None
+    open_questions: list[str] = Field(default_factory=list, alias="openQuestions")
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"populate_by_name": True}
+
+
+class WorkflowCodingResultRequest(BaseModel):
+    operator: str = "codex"
+    branch_name: str | None = Field(default=None, alias="branchName")
+    commit_id: str | None = Field(default=None, alias="commitId")
+    merge_request_url: str | None = Field(default=None, alias="mergeRequestUrl")
+    summary: str | None = None
+    tests: list[str] = Field(default_factory=list)
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"populate_by_name": True}

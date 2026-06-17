@@ -19,12 +19,24 @@ from app.models import (
     AdapterRequest,
     AdapterResult,
     AdapterStatus,
+    WorkflowAdvanceRequest,
+    WorkflowCodingResultRequest,
+    WorkflowRequirementRequest,
+    WorkflowStartRequest,
     YunxiaoPipelineFailureCallback,
     YunxiaoTaskCallback,
 )
 from app.pipeline_agent import analyze_pipeline_failure
 from app.registry import registry
 from app.status_store import status_store
+from app.workflow import (
+    WorkflowError,
+    advance_workflow,
+    get_workflow,
+    start_workflow,
+    submit_coding_result,
+    submit_requirement,
+)
 
 
 app = FastAPI(title="Adapter MVP", version="0.1.0")
@@ -143,6 +155,67 @@ def adapter_dingtalk_resolve_operator(request: DingTalkResolveOperatorRequest):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/workflow/start", dependencies=[Depends(require_api_token)])
+def workflow_start(request: WorkflowStartRequest):
+    try:
+        workflow = start_workflow(request)
+        return {
+            "workflowId": workflow["workflowId"],
+            "status": workflow["status"],
+            "workflow": workflow,
+        }
+    except WorkflowError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/workflow/{workflow_id}", dependencies=[Depends(require_api_token)])
+def workflow_get(workflow_id: str, eventLimit: int = 50):
+    try:
+        return get_workflow(workflow_id, eventLimit)
+    except WorkflowError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/workflow/{workflow_id}/advance", dependencies=[Depends(require_api_token)])
+def workflow_advance(workflow_id: str, request: WorkflowAdvanceRequest):
+    try:
+        return advance_workflow(workflow_id, request)
+    except WorkflowError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/workflow/{workflow_id}/requirement", dependencies=[Depends(require_api_token)])
+def workflow_requirement(workflow_id: str, request: WorkflowRequirementRequest):
+    try:
+        return submit_requirement(workflow_id, request)
+    except WorkflowError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/workflow/{workflow_id}/coding-result", dependencies=[Depends(require_api_token)])
+def workflow_coding_result(workflow_id: str, request: WorkflowCodingResultRequest):
+    try:
+        return submit_coding_result(workflow_id, request)
+    except WorkflowError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.post("/adapter/preview", dependencies=[Depends(require_api_token)])

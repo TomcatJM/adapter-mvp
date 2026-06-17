@@ -108,6 +108,9 @@ POST /adapter/execute
 GET /adapter/status/{task_id}
 GET /adapter/audit/{task_id}
 POST /adapter/dingtalk/read
+POST /workflow/start
+GET /workflow/{workflow_id}
+POST /workflow/{workflow_id}/advance
 ```
 
 Use the callback endpoint first for Yunxiao integration. Direct Adapter APIs are for manual verification and future system adapters.
@@ -120,7 +123,7 @@ Content-Type: application/json
 Authorization: Bearer <ADAPTER_API_TOKEN>
 ```
 
-Reads `alidocs.dingtalk.com/i/nodes/<nodeId>` through Adapter-managed DingTalk OpenAPI calls. It does not depend on OpenClaw or `dws`, and must not be replaced with browser fetch or web search.
+Reads `alidocs.dingtalk.com/i/nodes/<nodeId>` through Adapter-managed DingTalk OpenAPI calls first. Codex may fall back to OpenClaw / `dws` only when Adapter is unavailable, times out, or returns a read failure, and must state that it is using `OpenClaw fallback`. Browser fetch or web search must not be used for Alidocs links.
 
 The DingTalk app credentials/token cache and document endpoint templates are split into reusable MySQL tables:
 
@@ -203,6 +206,32 @@ Safety: do not paste appKey, appSecret, bearer tokens, cookies, private keys, au
 | 404 | Unknown adapter/system/action |
 | 422 | Invalid request body |
 
+## Workflow P0
+
+```http
+POST /workflow/start
+GET  /workflow/{workflow_id}
+POST /workflow/{workflow_id}/advance
+POST /workflow/{workflow_id}/requirement
+POST /workflow/{workflow_id}/coding-result
+Authorization: Bearer <ADAPTER_API_TOKEN>
+```
+
+P0 provides a persistent workflow ledger:
+
+- `start` creates a `CREATED` instance from a DingTalk/Alidocs URL.
+- `advance` reads the DingTalk document when status is `CREATED` and moves to `DOC_READ`.
+- `requirement` stores Codex structured requirement output and moves to `REQUIREMENT_PARSED`.
+- `coding-result` stores branch/commit/MR/test summary and moves to `CODE_SUBMITTED`.
+- `GET /workflow/{workflow_id}` returns the instance plus recent workflow events.
+
+The workflow tables are:
+
+```text
+adapter_workflow_instance
+adapter_workflow_event
+```
+
 ## Audit Log
 
 Remote path:
@@ -218,6 +247,8 @@ When MySQL is configured, status and audit entries are also persisted to:
 ```text
 adapter_status
 adapter_audit
+adapter_workflow_instance
+adapter_workflow_event
 ```
 
 If the configured DB user cannot create tables, ask DBA to run:

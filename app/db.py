@@ -196,6 +196,52 @@ def ensure_schema() -> None:
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter钉钉文档读取配置表'
                     """
                 )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS adapter_workflow_instance (
+                        workflow_id VARCHAR(64) PRIMARY KEY COMMENT '工作流实例ID',
+                        requirement_key VARCHAR(128) NULL COMMENT '需求唯一键，可来自钉钉节点或云效工作项',
+                        dingtalk_url VARCHAR(2048) NOT NULL COMMENT '钉钉/Alidocs需求文档URL',
+                        dingtalk_node_id VARCHAR(256) NULL COMMENT '钉钉文档节点ID',
+                        yunxiao_task_id VARCHAR(128) NULL COMMENT '云效主任务ID',
+                        yunxiao_pipeline_id VARCHAR(128) NULL COMMENT '云效流水线ID',
+                        yunxiao_build_number VARCHAR(128) NULL COMMENT '云效构建号',
+                        repo_url VARCHAR(1024) NULL COMMENT '代码仓库地址',
+                        branch_name VARCHAR(256) NULL COMMENT '实现分支',
+                        commit_id VARCHAR(128) NULL COMMENT '提交ID',
+                        apifox_project_id VARCHAR(128) NULL COMMENT 'Apifox项目ID',
+                        status VARCHAR(64) NOT NULL COMMENT '工作流状态',
+                        retry_count INT NOT NULL DEFAULT 0 COMMENT '当前步骤重试次数',
+                        last_error VARCHAR(2048) NULL COMMENT '最近错误',
+                        context_json JSON NULL COMMENT '安全上下文JSON',
+                        created_by VARCHAR(128) NULL COMMENT '创建人',
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                        UNIQUE KEY uk_adapter_workflow_requirement_key (requirement_key),
+                        KEY idx_adapter_workflow_status (status),
+                        KEY idx_adapter_workflow_yunxiao_task_id (yunxiao_task_id),
+                        KEY idx_adapter_workflow_pipeline (yunxiao_pipeline_id, yunxiao_build_number)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter交付工作流实例表'
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS adapter_workflow_event (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
+                        workflow_id VARCHAR(64) NOT NULL COMMENT '工作流实例ID',
+                        event_type VARCHAR(64) NOT NULL COMMENT '事件类型',
+                        from_status VARCHAR(64) NULL COMMENT '变更前状态',
+                        to_status VARCHAR(64) NULL COMMENT '变更后状态',
+                        operator VARCHAR(128) NULL COMMENT '操作人或系统',
+                        message VARCHAR(1024) NULL COMMENT '事件说明',
+                        payload_json JSON NULL COMMENT '安全事件载荷',
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                        KEY idx_adapter_workflow_event_workflow_id (workflow_id),
+                        KEY idx_adapter_workflow_event_created_at (created_at)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter交付工作流事件表'
+                    """
+                )
                 _ensure_comments(cursor)
                 _migrate_dingtalk_app_config(cursor)
         _schema_ready = True
@@ -356,6 +402,278 @@ def _migrate_dingtalk_app_config(cursor) -> None:
 
 def dumps(value: Any) -> str:
     return json.dumps(value or {}, ensure_ascii=False, separators=(",", ":"))
+
+
+def create_workflow_instance(
+    *,
+    workflow_id: str,
+    requirement_key: str | None,
+    dingtalk_url: str,
+    dingtalk_node_id: str | None,
+    repo_url: str | None,
+    branch_name: str | None,
+    context: dict[str, Any],
+    created_by: str | None,
+) -> dict[str, Any]:
+    _require_configured()
+    ensure_schema()
+    with connect() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO adapter_workflow_instance (
+                    workflow_id,
+                    requirement_key,
+                    dingtalk_url,
+                    dingtalk_node_id,
+                    repo_url,
+                    branch_name,
+                    status,
+                    context_json,
+                    created_by
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, 'CREATED', %s, %s)
+                """,
+                (
+                    workflow_id,
+                    requirement_key,
+                    dingtalk_url,
+                    dingtalk_node_id,
+                    repo_url,
+                    branch_name,
+                    dumps(context),
+                    created_by,
+                ),
+            )
+            _insert_workflow_event(
+                cursor,
+                workflow_id=workflow_id,
+                event_type="workflow_started",
+                from_status=None,
+                to_status="CREATED",
+                operator=created_by,
+                message="Workflow started",
+                payload={"requirementKey": requirement_key, "dingtalkNodeId": dingtalk_node_id},
+            )
+    workflow = find_workflow_instance(workflow_id)
+    if not workflow:
+        raise RuntimeError(f"Workflow was not created: {workflow_id}")
+    return workflow
+
+
+def find_workflow_instance(workflow_id: str) -> dict[str, Any] | None:
+    _require_configured()
+    ensure_schema()
+    with connect() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    workflow_id,
+                    requirement_key,
+                    dingtalk_url,
+                    dingtalk_node_id,
+                    yunxiao_task_id,
+                    yunxiao_pipeline_id,
+                    yunxiao_build_number,
+                    repo_url,
+                    branch_name,
+                    commit_id,
+                    apifox_project_id,
+                    status,
+                    retry_count,
+                    last_error,
+                    context_json,
+                    created_by,
+                    created_at,
+                    updated_at
+                FROM adapter_workflow_instance
+                WHERE workflow_id = %s
+                LIMIT 1
+                """,
+                (workflow_id,),
+            )
+            row = cursor.fetchone()
+    return _map_workflow_instance(row) if row else None
+
+
+def list_workflow_events(workflow_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    _require_configured()
+    ensure_schema()
+    safe_limit = max(1, min(int(limit or 50), 200))
+    with connect() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    id,
+                    workflow_id,
+                    event_type,
+                    from_status,
+                    to_status,
+                    operator,
+                    message,
+                    payload_json,
+                    created_at
+                FROM adapter_workflow_event
+                WHERE workflow_id = %s
+                ORDER BY id DESC
+                LIMIT %s
+                """,
+                (workflow_id, safe_limit),
+            )
+            rows = cursor.fetchall()
+    return [_map_workflow_event(row) for row in rows]
+
+
+def update_workflow_doc_read(
+    *,
+    workflow_id: str,
+    from_status: str,
+    context: dict[str, Any],
+    operator: str | None,
+    event_payload: dict[str, Any],
+) -> dict[str, Any]:
+    return _update_workflow_state(
+        workflow_id=workflow_id,
+        expected_status=from_status,
+        to_status="DOC_READ",
+        context=context,
+        operator=operator,
+        event_type="doc_read",
+        message="DingTalk document read",
+        event_payload=event_payload,
+        clear_error=True,
+    )
+
+
+def update_workflow_requirement(
+    *,
+    workflow_id: str,
+    context: dict[str, Any],
+    operator: str | None,
+    event_payload: dict[str, Any],
+) -> dict[str, Any]:
+    return _update_workflow_state(
+        workflow_id=workflow_id,
+        expected_status="DOC_READ",
+        to_status="REQUIREMENT_PARSED",
+        context=context,
+        operator=operator,
+        event_type="requirement_parsed",
+        message="Requirement parsed",
+        event_payload=event_payload,
+        clear_error=True,
+    )
+
+
+def update_workflow_coding_result(
+    *,
+    workflow_id: str,
+    from_status: str,
+    branch_name: str | None,
+    commit_id: str | None,
+    context: dict[str, Any],
+    operator: str | None,
+    event_payload: dict[str, Any],
+) -> dict[str, Any]:
+    return _update_workflow_state(
+        workflow_id=workflow_id,
+        expected_status=from_status,
+        to_status="CODE_SUBMITTED",
+        context=context,
+        operator=operator,
+        event_type="coding_result_submitted",
+        message="Coding result submitted",
+        event_payload=event_payload,
+        branch_name=branch_name,
+        commit_id=commit_id,
+        clear_error=True,
+    )
+
+
+def mark_workflow_failed(
+    *,
+    workflow_id: str,
+    from_status: str,
+    error: str,
+    operator: str | None,
+    event_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    _require_configured()
+    ensure_schema()
+    clipped_error = str(error or "")[:2048]
+    with connect() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE adapter_workflow_instance
+                SET status = 'FAILED',
+                    last_error = %s,
+                    retry_count = retry_count + 1
+                WHERE workflow_id = %s
+                  AND status = %s
+                """,
+                (clipped_error, workflow_id, from_status),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError(f"Workflow status changed before failure mark: {workflow_id}")
+            _insert_workflow_event(
+                cursor,
+                workflow_id=workflow_id,
+                event_type="workflow_failed",
+                from_status=from_status,
+                to_status="FAILED",
+                operator=operator,
+                message=clipped_error[:1024],
+                payload=event_payload or {},
+            )
+    workflow = find_workflow_instance(workflow_id)
+    if not workflow:
+        raise ValueError(f"Workflow not found: {workflow_id}")
+    return workflow
+
+
+def record_workflow_error(
+    *,
+    workflow_id: str,
+    status: str,
+    error: str,
+    operator: str | None,
+    event_type: str,
+    event_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    _require_configured()
+    ensure_schema()
+    clipped_error = str(error or "")[:2048]
+    with connect() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE adapter_workflow_instance
+                SET last_error = %s,
+                    retry_count = retry_count + 1
+                WHERE workflow_id = %s
+                  AND status = %s
+                """,
+                (clipped_error, workflow_id, status),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError(f"Workflow status is not {status}: {workflow_id}")
+            _insert_workflow_event(
+                cursor,
+                workflow_id=workflow_id,
+                event_type=event_type,
+                from_status=status,
+                to_status=status,
+                operator=operator,
+                message=clipped_error[:1024],
+                payload=event_payload or {},
+            )
+    workflow = find_workflow_instance(workflow_id)
+    if not workflow:
+        raise ValueError(f"Workflow not found: {workflow_id}")
+    return workflow
 
 
 def find_apifox_project_config(project_name: str) -> dict[str, Any] | None:
@@ -525,6 +843,135 @@ def update_dingtalk_token_cache(config_name: str, access_token: str, token_expir
                     )
     except Exception:
         return
+
+
+def _update_workflow_state(
+    *,
+    workflow_id: str,
+    expected_status: str,
+    to_status: str,
+    context: dict[str, Any],
+    operator: str | None,
+    event_type: str,
+    message: str,
+    event_payload: dict[str, Any],
+    branch_name: str | None = None,
+    commit_id: str | None = None,
+    clear_error: bool = False,
+) -> dict[str, Any]:
+    _require_configured()
+    ensure_schema()
+    assignments = ["status = %s", "context_json = %s"]
+    params: list[Any] = [to_status, dumps(context)]
+    if branch_name is not None:
+        assignments.append("branch_name = %s")
+        params.append(branch_name)
+    if commit_id is not None:
+        assignments.append("commit_id = %s")
+        params.append(commit_id)
+    if clear_error:
+        assignments.append("last_error = NULL")
+    params.extend([workflow_id, expected_status])
+    with connect() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                UPDATE adapter_workflow_instance
+                SET {", ".join(assignments)}
+                WHERE workflow_id = %s
+                  AND status = %s
+                """,
+                tuple(params),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError(f"Workflow status is not {expected_status}: {workflow_id}")
+            _insert_workflow_event(
+                cursor,
+                workflow_id=workflow_id,
+                event_type=event_type,
+                from_status=expected_status,
+                to_status=to_status,
+                operator=operator,
+                message=message,
+                payload=event_payload,
+            )
+    workflow = find_workflow_instance(workflow_id)
+    if not workflow:
+        raise ValueError(f"Workflow not found: {workflow_id}")
+    return workflow
+
+
+def _insert_workflow_event(
+    cursor,
+    *,
+    workflow_id: str,
+    event_type: str,
+    from_status: str | None,
+    to_status: str | None,
+    operator: str | None,
+    message: str | None,
+    payload: dict[str, Any] | None,
+) -> None:
+    cursor.execute(
+        """
+        INSERT INTO adapter_workflow_event (
+            workflow_id,
+            event_type,
+            from_status,
+            to_status,
+            operator,
+            message,
+            payload_json
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """,
+        (
+            workflow_id,
+            event_type,
+            from_status,
+            to_status,
+            operator,
+            message,
+            dumps(payload),
+        ),
+    )
+
+
+def _map_workflow_instance(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "workflowId": row.get("workflow_id"),
+        "requirementKey": row.get("requirement_key"),
+        "dingtalkUrl": row.get("dingtalk_url"),
+        "dingtalkNodeId": row.get("dingtalk_node_id"),
+        "yunxiaoTaskId": row.get("yunxiao_task_id"),
+        "yunxiaoPipelineId": row.get("yunxiao_pipeline_id"),
+        "yunxiaoBuildNumber": row.get("yunxiao_build_number"),
+        "repoUrl": row.get("repo_url"),
+        "branchName": row.get("branch_name"),
+        "commitId": row.get("commit_id"),
+        "apifoxProjectId": row.get("apifox_project_id"),
+        "status": row.get("status"),
+        "retryCount": row.get("retry_count") or 0,
+        "lastError": row.get("last_error"),
+        "context": _json_or_none(row.get("context_json")) or {},
+        "createdBy": row.get("created_by"),
+        "createdAt": _iso_or_none(row.get("created_at")),
+        "updatedAt": _iso_or_none(row.get("updated_at")),
+    }
+
+
+def _map_workflow_event(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row.get("id"),
+        "workflowId": row.get("workflow_id"),
+        "eventType": row.get("event_type"),
+        "fromStatus": row.get("from_status"),
+        "toStatus": row.get("to_status"),
+        "operator": row.get("operator"),
+        "message": row.get("message"),
+        "payload": _json_or_none(row.get("payload_json")) or {},
+        "createdAt": _iso_or_none(row.get("created_at")),
+    }
 
 
 def upsert_dingtalk_doc_config(config_name: str, changes: dict[str, Any]) -> dict[str, Any]:
@@ -792,3 +1239,16 @@ def _json_or_none(value: Any) -> Any:
         return json.loads(value)
     except (TypeError, json.JSONDecodeError):
         return value
+
+
+def _iso_or_none(value: Any) -> str | None:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if value in (None, ""):
+        return None
+    return str(value)
+
+
+def _require_configured() -> None:
+    if not configured():
+        raise RuntimeError("Database env is not configured")

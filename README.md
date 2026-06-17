@@ -11,6 +11,7 @@
   - `GET /adapter/status/{task_id}`：按任务 ID 查询执行状态。
   - `GET /adapter/audit/{task_id}`：按任务 ID 查询审计记录。
   - `POST /adapter/dingtalk/read`：通过 Adapter 托管的钉钉 OpenAPI 配置读取钉钉/Alidocs 文档或表格。
+  - `POST /workflow/start`、`POST /workflow/{workflow_id}/advance`：创建并推进交付 workflow 账本。
   - `POST /callbacks/yunxiao/task`：云效任务回调入口。
 - 默认关闭远端执行，只有 `ALLOW_REMOTE_EXEC=true` 后才允许真实执行。
 - 主机元数据与密码等密钥分离存放。
@@ -126,7 +127,7 @@ Invoke-RestMethod http://127.0.0.1:18080/adapter/execute `
 
 ### 钉钉/Alidocs 文档读取
 
-Adapter 自己调用钉钉 OpenAPI，不依赖 OpenClaw / `dws`。钉钉应用级凭据和 token 缓存单独维护，文档读取 endpoint 模板引用应用名：
+Adapter 优先自己调用钉钉 OpenAPI；如果 Adapter 不可用或读取失败，Codex 可降级到 OpenClaw / `dws`，但需要明确提示当前使用的是 `OpenClaw fallback`。钉钉应用级凭据和 token 缓存单独维护，文档读取 endpoint 模板引用应用名：
 
 ```text
 adapter_dingtalk_app        # 应用名称、appKey、appSecret、access_token 缓存
@@ -182,6 +183,31 @@ Content-Type: application/json
 ```
 
 `kind` 可传 `adoc` 或 `axls`；如果配置了 `doc_info_url_template`，Adapter 会先查元数据自动判断。`adoc` 会返回 `kind=document` 和 `document`；`axls` 会返回 `kind=sheet`、`sheets`、`sheetId`、`rangeResult`。错误信息会做基础脱敏，不要把 token、cookie、私钥或链接片段贴到聊天和日志里。
+
+### Workflow P0
+
+Workflow 账本用于把一次钉钉需求到交付的过程串起来。P0 已支持创建实例、读取钉钉文档推进到 `DOC_READ`、提交结构化需求和提交编码结果：
+
+```http
+POST /workflow/start
+GET  /workflow/{workflow_id}
+POST /workflow/{workflow_id}/advance
+POST /workflow/{workflow_id}/requirement
+POST /workflow/{workflow_id}/coding-result
+```
+
+最小启动请求：
+
+```json
+{
+  "dingtalkUrl": "https://alidocs.dingtalk.com/i/nodes/<nodeId>",
+  "requirementKey": "REQ-001",
+  "operator": "codex",
+  "context": {
+    "projectName": "jdb-school-gmc"
+  }
+}
+```
 
 ## 8. 云效回调示例
 

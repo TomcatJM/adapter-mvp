@@ -85,6 +85,23 @@ class FlowEventRouteTest(unittest.TestCase):
         self.assertEqual(ast.literal_eval(decorator.args[0]), "/adapter/dingtalk/resolve-operator")
         _assert_requires_api_token(self, decorator)
 
+    def test_workflow_routes_require_token(self) -> None:
+        module = _load_module()
+        cases = [
+            ("workflow_start", "app.post", "/workflow/start"),
+            ("workflow_get", "app.get", "/workflow/{workflow_id}"),
+            ("workflow_advance", "app.post", "/workflow/{workflow_id}/advance"),
+            ("workflow_requirement", "app.post", "/workflow/{workflow_id}/requirement"),
+            ("workflow_coding_result", "app.post", "/workflow/{workflow_id}/coding-result"),
+        ]
+        for function_name, decorator_name, path in cases:
+            with self.subTest(function=function_name):
+                function = _find_function(module, function_name)
+                decorator = _get_decorator_call(function)
+                self.assertEqual(ast.unparse(decorator.func), decorator_name)
+                self.assertEqual(ast.literal_eval(decorator.args[0]), path)
+                _assert_requires_api_token(self, decorator)
+
 
 if __name__ == "__main__":
     unittest.main()

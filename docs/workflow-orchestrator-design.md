@@ -1,0 +1,413 @@
+# Adapter MVP 工作流编排设计
+
+## 1. 目标
+
+在 `adapter-mvp` 内部实现一个轻量级 Workflow Orchestrator，用来承接这条交付链路：
+
+```text
+钉钉需求文档
+  -> 创建云效工作项
+  -> Codex coding
+  -> 云效流水线
+  -> 推送 API 到 Apifox
+  -> 关闭云效工作项
+```
+
+这里的核心思想是：`adapter-mvp` 负责状态、幂等、重试、回调、审计和外部系统 API 调用；Codex 或其他 Coding Agent 负责理解需求、写代码、修复问题。不要把所有事情都塞进一个“超级 Agent”，先把流程账本做稳。
+
+当前 P0 已实现范围：
+
+- `adapter_workflow_instance` / `adapter_workflow_event` 表。
+- `/workflow/start`、`/workflow/{workflow_id}`。
+- `/workflow/{workflow_id}/advance` 在 `CREATED` 状态读取钉钉文档并推进到 `DOC_READ`。
+- `/workflow/{workflow_id}/requirement` 保存结构化需求并推进到 `REQUIREMENT_PARSED`。
+- `/workflow/{workflow_id}/coding-result` 保存分支、提交、MR、测试摘要并推进到 `CODE_SUBMITTED`。
+
+云效工作项创建/关闭、流水线成功绑定、Apifox 后续推进和失败恢复仍是后续阶段。
+
+## 2. 职责边界
+
+| 组件 | 职责 |
+| --- | --- |
+| Codex | 解析需求、生成实现计划、编码、测试、根据 Review 修复 |
+| adapter-mvp workflow | 持久化状态、判断下一步、处理回调、执行可安全重试的步骤 |
+| adapter-mvp adapters | 调用钉钉、云效、Apifox、代码平台或 CI 相关 API |
+| 云效流水线 | 编译、测试、部署、发送成功/失败回调 |
+| 人工审批人 | 确认不清晰需求、发布门禁、高风险或破坏性动作 |
+
+一句话原则：
+
+```text
+Workflow 管顺序和状态。
+Agent 管理解和判断。
+Adapter 管外部 API 执行。
+```
+
+## 3. 工作流状态
+
+使用一个 `status` 字段表示主状态，所有状态变化同时写入追加式事件表。
+
+| 状态 | 含义 | 下一步 |
+| --- | --- | --- |
+| `CREATED` | 工作流实例已创建 | `DOC_READ` |
+| `DOC_READ` | 已读取并保存钉钉文档内容 | `REQUIREMENT_PARSED` |
+| `REQUIREMENT_PARSED` | Codex/Agent 已提交结构化需求 | `YUNXIAO_TASK_CREATED` |
+| `YUNXIAO_TASK_CREATED` | 云效主工作项已创建 | `CODING_REQUESTED` |
+| `CODING_REQUESTED` | Coding Agent 已拿到足够上下文，可以开始编码 | `CODE_SUBMITTED` |
+| `CODE_SUBMITTED` | 分支、MR 或提交信息已记录 | `PIPELINE_RUNNING` |
+| `PIPELINE_RUNNING` | 云效流水线运行中 | `PIPELINE_SUCCESS` 或 `PIPELINE_FAILED` |
+| `PIPELINE_SUCCESS` | 收到流水线成功回调 | `APIFOX_SYNCED` |
+| `PIPELINE_FAILED` | 收到流水线失败回调 | `NEEDS_HUMAN` 或 `CODING_REQUESTED` |
+| `APIFOX_SYNCED` | OpenAPI 已同步到 Apifox | `YUNXIAO_TASK_CLOSED` |
+| `YUNXIAO_TASK_CLOSED` | 云效工作项已关闭 | 终态 |
+| `NEEDS_HUMAN` | 等待人工处理 | 人工确认后回到指定状态 |
+| `FAILED` | 不可自动恢复失败 | 终态 |
+
+除专门的恢复/管理接口外，不允许随意跳状态。状态机是这条链路的“账本”，别让 webhook 或 Agent 绕过它直接改最终状态。
+
+## 4. MySQL 表设计
+
+### 4.1 `adapter_workflow_instance`
+
+```sql
+CREATE TABLE IF NOT EXISTS adapter_workflow_instance (
+    workflow_id VARCHAR(64) PRIMARY KEY COMMENT '工作流实例ID',
+    requirement_key VARCHAR(128) NULL COMMENT '需求唯一键，可来自钉钉节点或云效工作项',
+    dingtalk_url VARCHAR(2048) NOT NULL COMMENT '钉钉/Alidocs需求文档URL',
+    dingtalk_node_id VARCHAR(256) NULL COMMENT '钉钉文档节点ID',
+    yunxiao_task_id VARCHAR(128) NULL COMMENT '云效主任务ID',
+    yunxiao_pipeline_id VARCHAR(128) NULL COMMENT '云效流水线ID',
+    yunxiao_build_number VARCHAR(128) NULL COMMENT '云效构建号',
+    repo_url VARCHAR(1024) NULL COMMENT '代码仓库地址',
+    branch_name VARCHAR(256) NULL COMMENT '实现分支',
+    commit_id VARCHAR(128) NULL COMMENT '提交ID',
+    apifox_project_id VARCHAR(128) NULL COMMENT 'Apifox项目ID',
+    status VARCHAR(64) NOT NULL COMMENT '工作流状态',
+    retry_count INT NOT NULL DEFAULT 0 COMMENT '当前步骤重试次数',
+    last_error VARCHAR(2048) NULL COMMENT '最近错误',
+    context_json JSON NULL COMMENT '安全上下文JSON',
+    created_by VARCHAR(128) NULL COMMENT '创建人',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY uk_adapter_workflow_requirement_key (requirement_key),
+    KEY idx_adapter_workflow_status (status),
+    KEY idx_adapter_workflow_yunxiao_task_id (yunxiao_task_id),
+    KEY idx_adapter_workflow_pipeline (yunxiao_pipeline_id, yunxiao_build_number)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter交付工作流实例表';
+```
+
+### 4.2 `adapter_workflow_event`
+
+```sql
+CREATE TABLE IF NOT EXISTS adapter_workflow_event (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
+    workflow_id VARCHAR(64) NOT NULL COMMENT '工作流实例ID',
+    event_type VARCHAR(64) NOT NULL COMMENT '事件类型',
+    from_status VARCHAR(64) NULL COMMENT '变更前状态',
+    to_status VARCHAR(64) NULL COMMENT '变更后状态',
+    operator VARCHAR(128) NULL COMMENT '操作人或系统',
+    message VARCHAR(1024) NULL COMMENT '事件说明',
+    payload_json JSON NULL COMMENT '安全事件载荷',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    KEY idx_adapter_workflow_event_workflow_id (workflow_id),
+    KEY idx_adapter_workflow_event_created_at (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter交付工作流事件表';
+```
+
+## 5. 接口设计
+
+所有 workflow 接口都需要：
+
+```http
+Authorization: Bearer <ADAPTER_API_TOKEN>
+```
+
+### 5.1 启动工作流
+
+```http
+POST /workflow/start
+```
+
+请求示例：
+
+```json
+{
+  "dingtalkUrl": "https://alidocs.dingtalk.com/i/nodes/<nodeId>",
+  "requirementKey": "REQ-20260617-001",
+  "repoUrl": "https://codeup.aliyun.com/group/project.git",
+  "branchName": "feature/REQ-20260617-001",
+  "operator": "jzm",
+  "context": {
+    "projectName": "jdb-school-crm",
+    "apifoxProjectKey": "jdb-school-crm"
+  }
+}
+```
+
+处理逻辑：
+
+1. 生成 `workflow_id`。
+2. 写入 `adapter_workflow_instance`，状态为 `CREATED`。
+3. 写入 `workflow_started` 事件。
+4. 可选：自动调用 `/workflow/{workflow_id}/advance` 推进一步。
+
+响应示例：
+
+```json
+{
+  "workflowId": "wf-20260617-001",
+  "status": "CREATED"
+}
+```
+
+### 5.2 推进工作流
+
+```http
+POST /workflow/{workflow_id}/advance
+```
+
+这个接口每次只执行一个确定性的下一步，允许重复调用，但必须做到幂等。
+
+示例：
+
+| 当前状态 | 动作 |
+| --- | --- |
+| `CREATED` | 读取钉钉文档，保存摘要/上下文，推进到 `DOC_READ` |
+| `REQUIREMENT_PARSED` | 创建云效工作项，推进到 `YUNXIAO_TASK_CREATED` |
+| `PIPELINE_SUCCESS` | 同步 API 到 Apifox，推进到 `APIFOX_SYNCED` |
+| `APIFOX_SYNCED` | 关闭云效工作项，推进到 `YUNXIAO_TASK_CLOSED` |
+
+注意：这个接口不要做 coding。它最多返回一个 `codingRequest`，让 Codex 拿着这个上下文去编码。
+
+### 5.3 提交结构化需求
+
+```http
+POST /workflow/{workflow_id}/requirement
+```
+
+Codex 读取钉钉文档并完成需求解析后，调用这个接口提交结构化结果。
+
+请求示例：
+
+```json
+{
+  "operator": "codex",
+  "summary": "新增客户跟进记录接口",
+  "acceptanceCriteria": [
+    "支持新增跟进记录",
+    "必填字段缺失时返回校验错误",
+    "写入后可在客户详情查询"
+  ],
+  "affectedRepos": ["jdb-school-crm"],
+  "apiChanges": [
+    {
+      "method": "POST",
+      "path": "/crm/client/follow-record",
+      "description": "新增客户跟进记录"
+    }
+  ]
+}
+```
+
+处理逻辑：
+
+1. 将结构化需求写入 `context_json`。
+2. 将状态从 `DOC_READ` 推进到 `REQUIREMENT_PARSED`。
+3. 写入事件。
+
+### 5.4 提交编码结果
+
+```http
+POST /workflow/{workflow_id}/coding-result
+```
+
+请求示例：
+
+```json
+{
+  "operator": "codex",
+  "branchName": "feature/REQ-20260617-001",
+  "commitId": "abc123",
+  "mergeRequestUrl": "https://codeup.aliyun.com/.../merge_requests/1",
+  "summary": "已完成接口、DTO、Service、Mapper 和测试"
+}
+```
+
+处理逻辑：
+
+1. 保存分支、提交、MR 地址等信息。
+2. 将状态从 `CODING_REQUESTED` 推进到 `CODE_SUBMITTED`。
+3. 可选：触发云效流水线；也可以等待云效根据提交自动触发后回调。
+
+### 5.5 云效流水线成功回调
+
+```http
+POST /callbacks/yunxiao/pipeline-success
+```
+
+请求示例：
+
+```json
+{
+  "workflowId": "wf-20260617-001",
+  "taskId": "YUNXIAO-123",
+  "pipelineId": "p-001",
+  "buildNumber": "88",
+  "branchName": "feature/REQ-20260617-001",
+  "commitId": "abc123",
+  "operator": "yunxiao"
+}
+```
+
+处理逻辑：
+
+1. 优先按 `workflowId` 匹配；缺失时按 `pipelineId + buildNumber` 或 `taskId` 兜底匹配。
+2. 将 `PIPELINE_RUNNING` 或 `CODE_SUBMITTED` 推进到 `PIPELINE_SUCCESS`。
+3. 调用 `/workflow/{workflow_id}/advance` 继续同步 Apifox。
+
+### 5.6 云效流水线失败回调
+
+复用现有失败回调，并补充和 workflow 的绑定：
+
+```http
+POST /callbacks/yunxiao/pipeline-failure
+```
+
+新增可选字段：
+
+```json
+{
+  "workflowId": "wf-20260617-001"
+}
+```
+
+处理逻辑：
+
+1. 使用现有 `pipeline_agent.py` 分析失败日志。
+2. 将状态推进到 `PIPELINE_FAILED`。
+3. 如果失败类型明确且可修复，生成 coding repair request，等待 Codex 修复。
+4. 如果失败原因不明确，推进到 `NEEDS_HUMAN`。
+
+### 5.7 查询工作流
+
+```http
+GET /workflow/{workflow_id}
+```
+
+返回工作流实例详情和最近事件。
+
+### 5.8 重试和人工恢复
+
+```http
+POST /workflow/{workflow_id}/retry
+POST /workflow/{workflow_id}/resolve
+```
+
+示例：
+
+```json
+{
+  "operator": "jzm",
+  "targetStatus": "CODING_REQUESTED",
+  "reason": "流水线失败原因已确认，需要 Codex 修复测试"
+}
+```
+
+这两个接口只用于受控恢复，不作为正常主链路入口。
+
+## 6. 幂等规则
+
+1. `requirementKey` 唯一；重复启动同一个需求时返回已有 workflow。
+2. 创建云效工作项后必须保存 `yunxiao_task_id`；重试时不能重复创建。
+3. Apifox 同步尽量使用 `workflow_id + build_number + project` 作为幂等键。
+4. 关闭云效工作项前先检查状态；已关闭则跳过。
+5. 每次外部调用前后都写事件，方便查“卡在哪一步”。
+
+## 7. 重试策略
+
+| 步骤 | 策略 |
+| --- | --- |
+| 读取钉钉文档 | 最多重试 3 次，然后进入 `NEEDS_HUMAN` |
+| 创建云效工作项 | 最多重试 3 次，然后进入 `FAILED` |
+| Coding | 不由 workflow 自动重试，由 Codex 或人工触发 |
+| 流水线失败 | 不盲目重跑，先分析失败原因 |
+| Apifox 同步 | 最多重试 3 次，然后进入 `NEEDS_HUMAN` |
+| 关闭云效工作项 | 最多重试 3 次，然后进入 `NEEDS_HUMAN` |
+
+不要做无限循环，尤其不要让系统自动反复提交代码或修改生产状态。自动化可以快，但不能失控。
+
+## 8. MVP 实现顺序
+
+### Phase 1：被动状态跟踪
+
+1. 增加 workflow 两张表。
+2. 增加 `/workflow/start`、`/workflow/{id}`、`/workflow/{id}/requirement`、`/workflow/{id}/coding-result`。
+3. 增加 workflow 事件记录。
+
+目标：先有账本，知道每个需求走到哪一步。
+
+### Phase 2：事件驱动的发布尾段
+
+1. 增加 `/callbacks/yunxiao/pipeline-success`。
+2. 成功后调用现有 Apifox 同步逻辑。
+3. Apifox 同步成功后关闭云效工作项。
+
+目标：先把“流水线成功 -> Apifox -> 关单”这段自动跑通。
+
+### Phase 3：主动创建云效任务
+
+1. 增加云效工作项创建 adapter。
+2. 将 `REQUIREMENT_PARSED` 推进到 `YUNXIAO_TASK_CREATED`。
+
+目标：钉钉需求解析后自动在云效建任务。
+
+### Phase 4：Codex/Agent 集成
+
+1. Codex 调用 `/workflow/start`。
+2. Codex 读取返回的文档内容，或继续调用 `/adapter/dingtalk/read`。
+3. Codex 提交结构化需求。
+4. Codex 编码完成后提交 branch/commit/MR 结果。
+
+目标：让 Codex 成为智能执行者，让 `adapter-mvp` 成为稳定的流程账本和外部系统网关。
+
+## 9. 最小成功链路
+
+```text
+POST /workflow/start
+  status=CREATED
+
+POST /workflow/{id}/advance
+  读取钉钉文档
+  status=DOC_READ
+
+Codex 解析需求
+POST /workflow/{id}/requirement
+  status=REQUIREMENT_PARSED
+
+POST /workflow/{id}/advance
+  创建云效任务
+  status=YUNXIAO_TASK_CREATED
+
+Codex 编码并提交结果
+POST /workflow/{id}/coding-result
+  status=CODE_SUBMITTED
+
+云效流水线回调
+POST /callbacks/yunxiao/pipeline-success
+  status=PIPELINE_SUCCESS
+  同步 Apifox
+  status=APIFOX_SYNCED
+  关闭云效工作项
+  status=YUNXIAO_TASK_CLOSED
+```
+
+## 10. MVP 阶段不要做的事
+
+- 不要在状态机稳定前拆一堆独立 Agent。
+- 不要让 webhook 绕过 workflow 状态，直接关闭任务。
+- 不要让流水线失败自动触发无限次 coding。
+- 不要把钉钉、云效、Apifox 的 token 放进 workflow 上下文。
+- 不要依赖聊天历史作为流程真实状态。
+
+数据库里的 workflow 状态才是事实来源。Codex 是聪明的执行者，不是账本本身。
