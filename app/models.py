@@ -55,6 +55,7 @@ class YunxiaoTaskCallback(BaseModel):
 
 class YunxiaoPipelineFailureCallback(BaseModel):
     task_id: str = Field(alias="taskId")
+    workflow_id: str | None = Field(default=None, alias="workflowId")
     pipeline_id: str = Field(alias="pipelineId")
     build_number: str = Field(alias="buildNumber")
     stage_name: str = Field(alias="stageName")
@@ -95,6 +96,8 @@ class WorkflowAdvanceRequest(BaseModel):
 class WorkflowRequirementRequest(BaseModel):
     operator: str = "codex"
     summary: str
+    assignee_id: str | None = Field(default=None, alias="assigneeId")
+    assignee_name: str | None = Field(default=None, alias="assigneeName")
     acceptance_criteria: list[str] = Field(default_factory=list, alias="acceptanceCriteria")
     affected_repos: list[str] = Field(default_factory=list, alias="affectedRepos")
     api_changes: list[dict[str, Any]] = Field(default_factory=list, alias="apiChanges")

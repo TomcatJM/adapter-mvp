@@ -1144,12 +1144,13 @@ OPENAPI_<KEY>_URL
 
 4. 如果没有 key，Adapter 从 `sources[0].repo` 提取仓库名并转成 key。
 
-5. 最后使用默认值：
+5. `OPENAPI_URL` 可作为 OpenAPI 地址兜底，但 Apifox 项目 ID 不再使用默认兜底。
 
 ```text
-APIFOX_DEFAULT_PROJECT_ID
 OPENAPI_URL
 ```
+
+如果无法解析项目名或 Apifox 项目 ID，Adapter 会停止导入并返回缺少项目映射的原因，不会静默推送到默认项目。
 
 ### 16.4 安全开关
 
@@ -1374,7 +1375,6 @@ Adapter 当前项目 ID 解析顺序：
 3. 数据库 adapter_apifox_project_config：project_name -> apifox_project_id
 4. 环境变量 APIFOX_PIPELINE_<PIPELINE_ID>_PROJECT
 5. 环境变量 APIFOX_PROJECT_<KEY>_ID
-6. 环境变量 APIFOX_DEFAULT_PROJECT_ID / APIFOX_PROJECT_ID
 ```
 
 注意：统一 Webhook URL 被多个项目共用时，不能靠默认项目 ID 判断项目。若 payload 未传项目名且 DB 中没有 `pipeline_id` 映射，Adapter 会停止导入并返回缺少项目映射。
@@ -1456,16 +1456,17 @@ apifox_project_id=7049238
 remark=订单服务接口项目-流水线重新导入目标
 ```
 
-远端配置复核：
+历史远端配置复核：
 
 ```text
 APIFOX_AUTO_IMPORT=true
-APIFOX_DEFAULT_PROJECT_ID=7049238
 APIFOX_PROJECT_JDB_ORDER_ID=7049238
 APIFOX_PIPELINE_4437990_PROJECT=jdb-order
 APIFOX_STRIP_PROJECT_PATH=true
 ADAPTER_PUBLIC_BASE_URL=http://47.116.102.238:18080
 ```
+
+当前规则已废弃 `APIFOX_DEFAULT_PROJECT_ID` 作为项目 ID 兜底；应删除该配置，并用数据库映射、`APIFOX_PROJECT_<KEY>_ID` 或 payload `APIFOX_PROJECT_ID` 显式指定目标项目。
 
 使用运行中的 Adapter HTTP 服务触发云效 SUCCESS 事件后，真实导入结果：
 
@@ -1497,7 +1498,7 @@ taskId=yx-flow-4989239-30
 taskId=yx-flow-4989239-31
 projectName=default
 projectKey=DEFAULT
-projectConfigSource=environment_default
+projectConfigSource=unresolved
 openapiUrl=http://47.116.102.238:18080/adapter/openapi/default
 upstreamOpenapiUrl=https://micro-api-test.kidcastle.com.cn/gw/default/v3/api-docs
 apifoxStatusCode=422

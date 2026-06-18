@@ -21,17 +21,17 @@ def maybe_import_from_flow_event(payload: dict[str, Any]) -> dict[str, Any]:
     safe_config = _safe_config(config)
     if not config["autoImport"]:
         return {"enabled": False, "imported": False, "reason": "APIFOX_AUTO_IMPORT is not true", **safe_config}
-    if config["projectNameSource"] == "default":
+    if not config.get("projectId") and config["projectNameSource"] == "unresolved":
         return {
             "enabled": True,
             "imported": False,
-            "reason": f"missing project mapping for pipelineId={config['pipelineId']}",
+            "reason": _missing_project_mapping_reason(config),
             **safe_config,
         }
     missing = [key for key in ("accessToken", "projectId", "openapiUrl") if not config.get(key)]
     if missing:
-        return {"enabled": True, "imported": False, "reason": f"missing {','.join(missing)}", **safe_config}
-    if config["stripProjectPath"]:
+        return {"enabled": True, "imported": False, "reason": _missing_config_reason(config, missing), **safe_config}
+    if config["stripProjectPath"] and config.get("projectName"):
         preflight = _preflight_openapi(config["projectName"])
         if not preflight["ok"]:
             return {
@@ -73,26 +73,24 @@ def _resolve_config(payload: dict[str, Any]) -> dict[str, Any]:
         project_name_source = "repo"
         project_name_remark = None
     else:
-        project_name = "default"
-        project_name_source = "default"
+        project_name = None
+        project_name_source = "unresolved"
         project_name_remark = None
     project_key = _normalize_key(project_name)
-    project_config = _find_project_config(project_name)
+    project_config = _find_project_config(project_name) if project_name else None
     project_id = (
         _pick(params, "APIFOX_PROJECT_ID")
         or (project_config or {}).get("apifoxProjectId")
-        or os.getenv(f"APIFOX_PROJECT_{project_key}_ID")
-        or (os.getenv("APIFOX_DEFAULT_PROJECT_ID") if project_name_source == "default" else None)
-        or (os.getenv("APIFOX_PROJECT_ID") if project_name_source == "default" else None)
+        or (os.getenv(f"APIFOX_PROJECT_{project_key}_ID") if project_name else None)
     )
     upstream_openapi_url = (
         _pick(params, "OPENAPI_URL", "APIFOX_OPENAPI_URL")
-        or os.getenv(f"OPENAPI_{project_key}_URL")
+        or (os.getenv(f"OPENAPI_{project_key}_URL") if project_name else None)
         or os.getenv("OPENAPI_URL")
-        or _openapi_url_from_template(project_name, project_key)
+        or (_openapi_url_from_template(project_name, project_key) if project_name else None)
     )
     strip_project_path = os.getenv("APIFOX_STRIP_PROJECT_PATH", "true").lower() == "true"
-    openapi_url = _adapter_openapi_url(project_name) if strip_project_path else upstream_openapi_url
+    openapi_url = _adapter_openapi_url(project_name) if strip_project_path and project_name else upstream_openapi_url
     return {
         "autoImport": os.getenv("APIFOX_AUTO_IMPORT", "false").lower() == "true",
         "pipelineId": pipeline_id,
@@ -270,11 +268,29 @@ def _project_config_source(
         return "payload"
     if project_config and project_config.get("apifoxProjectId"):
         return "database"
-    if os.getenv(f"APIFOX_PROJECT_{project_key}_ID"):
+    if project_name_source != "unresolved" and os.getenv(f"APIFOX_PROJECT_{project_key}_ID"):
         return "environment_project"
-    if project_name_source == "default" and (os.getenv("APIFOX_DEFAULT_PROJECT_ID") or os.getenv("APIFOX_PROJECT_ID")):
-        return "environment_default"
     return "unresolved"
+
+
+def _missing_project_mapping_reason(config: dict[str, Any]) -> str:
+    pipeline_id = config.get("pipelineId") or "unknown"
+    return (
+        f"missing Apifox project mapping for pipelineId={pipeline_id}; "
+        "pass APIFOX_PROJECT_ID with OPENAPI_URL, pass PROJECT_NAME/SERVICE_NAME/APP_NAME/APIFOX_PROJECT_KEY, "
+        "or configure adapter_apifox_pipeline_config / APIFOX_PIPELINE_<PIPELINE_ID>_PROJECT. "
+        "APIFOX_DEFAULT_PROJECT_ID is intentionally ignored."
+    )
+
+
+def _missing_config_reason(config: dict[str, Any], missing: list[str]) -> str:
+    if missing == ["projectId"] and config.get("projectName"):
+        return (
+            f"missing Apifox project ID for projectName={config['projectName']} "
+            f"(source={config['projectNameSource']}); configure adapter_apifox_project_config, "
+            f"APIFOX_PROJECT_{config['projectKey']}_ID, or pass APIFOX_PROJECT_ID explicitly."
+        )
+    return f"missing {','.join(missing)}"
 
 
 def _pick(payload: dict[str, Any], *keys: str, default: Any = None) -> Any:

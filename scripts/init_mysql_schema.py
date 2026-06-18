@@ -31,7 +31,7 @@ def main() -> None:
         with conn.cursor() as cursor:
             for statement in statements:
                 cursor.execute(statement)
-        print("MySQL schema initialized: adapter core, Apifox config, DingTalk config")
+        print("MySQL schema initialized: adapter core, Apifox config, DingTalk config, Yunxiao config")
     finally:
         conn.close()
 

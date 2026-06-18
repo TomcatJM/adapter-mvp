@@ -209,6 +209,23 @@ POST /workflow/{workflow_id}/coding-result
 }
 ```
 
+云效流水线绑定 workflow 的第一版规则：
+
+- 云效成功/失败回调必须携带 `WORKFLOW_ID` 或 `workflowId`。
+- 成功回调会把 `CODE_SUBMITTED` / `PIPELINE_RUNNING` 推进到 `PIPELINE_SUCCESS`。
+- Apifox 导入成功，即 `imported=true`，才会继续推进到 `APIFOX_SYNCED`。
+- Apifox 未启用、配置缺失或导入失败时，状态停在 `PIPELINE_SUCCESS`，不会误触发关单。
+- 失败回调会把 `CODE_SUBMITTED` / `PIPELINE_RUNNING` / `PIPELINE_SUCCESS` 推进到 `PIPELINE_FAILED`。
+
+建议云效变量：
+
+```text
+WORKFLOW_ID=wf-xxx
+PROJECT_NAME=jdb-school-gmc
+DELIVERY_MODE=release
+OPENAPI_URL=https://...
+```
+
 ## 8. 云效回调示例
 
 Preview 回调示例：
@@ -481,7 +498,8 @@ Adapter 选择 Apifox 项目的优先级：
 3. 云效 payload 固定且不传项目时，按 `task.pipelineId` 查数据库 `adapter_apifox_pipeline_config` 得到项目名，再查 `adapter_apifox_project_config` 得到 Apifox 项目 ID。
 4. 数据库未命中时，按 `task.pipelineId` 读取兜底环境变量 `APIFOX_PIPELINE_<PIPELINE_ID>_PROJECT`，例如 `APIFOX_PIPELINE_4437990_PROJECT=jdb-order`。
 5. 根据 `sources[0].repo` 的仓库名生成 `<KEY>` 后读取对应环境变量。
-6. 使用 `APIFOX_DEFAULT_PROJECT_ID` 与 `OPENAPI_URL`。
+
+如果以上规则都找不到项目名或项目 ID，Adapter 会返回明确的 skipped/failed 原因，不会使用默认 Apifox 项目静默导入。
 
 安全默认值：
 
@@ -724,12 +742,11 @@ Adapter 解析优先级：
 1. payload.APIFOX_PROJECT_ID
 2. adapter_apifox_project_config.project_name -> apifox_project_id
 3. 环境变量 APIFOX_PROJECT_<KEY>_ID
-4. 环境变量 APIFOX_DEFAULT_PROJECT_ID / APIFOX_PROJECT_ID
 ```
 
 因此 `jdb-order` 会优先从数据库表取到 `7049238`。
 
-若云效 payload 不传项目名，Adapter 会先按 `pipeline_id` 从 `adapter_apifox_pipeline_config` 查到项目名，再从 `adapter_apifox_project_config` 查到对应 Apifox 项目 ID。DB 未命中时不会使用默认项目 ID 硬导。
+若云效 payload 不传项目名，Adapter 会先按 `pipeline_id` 从 `adapter_apifox_pipeline_config` 查到项目名，再从 `adapter_apifox_project_config` 查到对应 Apifox 项目 ID。DB 未命中时不会使用默认项目 ID 硬导，会返回缺少项目映射的提示。
 
 注意：数据库映射生效需要 Adapter 服务配置 `ADAPTER_DB_HOST`、`ADAPTER_DB_NAME`、`ADAPTER_DB_USER`、`ADAPTER_DB_PASSWORD`。未配置数据库时，Adapter 会继续使用环境变量映射兜底。
 

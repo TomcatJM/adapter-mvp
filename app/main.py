@@ -4,7 +4,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from app import db
-from app.apifox import OpenapiValidationError, fetch_sanitized_openapi, maybe_import_from_flow_event
+from app.apifox import OpenapiValidationError, fetch_sanitized_openapi
 from app.auth import require_api_token, require_execute_approval
 from app.dingtalk_docs import DingTalkDocError, read_dingtalk_doc, resolve_dingtalk_operator
 from app.audit import (
@@ -37,9 +37,19 @@ from app.workflow import (
     submit_coding_result,
     submit_requirement,
 )
+from app.yunxiao_pipeline import handle_pipeline_failure, handle_pipeline_success
 
 
-app = FastAPI(title="Adapter MVP", version="0.1.0")
+OPENAPI_TAGS = [
+    {"name": "健康检查", "description": "Adapter 服务健康状态"},
+    {"name": "OpenAPI", "description": "OpenAPI 清洗与导出"},
+    {"name": "钉钉文档", "description": "钉钉/Alidocs 文档读取与配置"},
+    {"name": "交付工作流", "description": "需求交付 workflow 账本"},
+    {"name": "适配器执行", "description": "Adapter 预览、执行、状态和审计"},
+    {"name": "云效回调", "description": "云效任务和流水线事件回调"},
+]
+
+app = FastAPI(title="Adapter MVP", version="0.1.0", openapi_tags=OPENAPI_TAGS)
 
 YUNXIAO_FLOW_EVENT_PATH = "/callbacks/yunxiao/flow-event"
 YUNXIAO_FLOW_EVENT_PUBLIC_PATH = "/callbacks/yunxiao/flow-event/public"
@@ -82,12 +92,12 @@ class DingTalkResolveOperatorRequest(BaseModel):
     updateConfig: bool = Field(default=False, description="Write resolved unionId back as operatorId")
 
 
-@app.get("/health")
+@app.get("/health", summary="健康检查", tags=["健康检查"])
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/adapter/openapi/{project_name}")
+@app.get("/adapter/openapi/{project_name}", summary="获取清洗后的 OpenAPI", tags=["OpenAPI"])
 def adapter_openapi(project_name: str):
     try:
         return fetch_sanitized_openapi(project_name)
@@ -95,7 +105,7 @@ def adapter_openapi(project_name: str):
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
-@app.post("/adapter/dingtalk/read", dependencies=[Depends(require_api_token)])
+@app.post("/adapter/dingtalk/read", summary="读取钉钉文档", tags=["钉钉文档"], dependencies=[Depends(require_api_token)])
 def adapter_dingtalk_read(request: DingTalkDocReadRequest):
     try:
         return read_dingtalk_doc(
@@ -112,7 +122,12 @@ def adapter_dingtalk_read(request: DingTalkDocReadRequest):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/adapter/dingtalk/config", dependencies=[Depends(require_api_token)])
+@app.post(
+    "/adapter/dingtalk/config",
+    summary="保存钉钉文档读取配置",
+    tags=["钉钉文档"],
+    dependencies=[Depends(require_api_token)],
+)
 def adapter_dingtalk_config(request: DingTalkDocConfigRequest):
     try:
         return {
@@ -128,7 +143,12 @@ def adapter_dingtalk_config(request: DingTalkDocConfigRequest):
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-@app.post("/adapter/dingtalk/resolve-operator", dependencies=[Depends(require_api_token)])
+@app.post(
+    "/adapter/dingtalk/resolve-operator",
+    summary="解析钉钉操作人",
+    tags=["钉钉文档"],
+    dependencies=[Depends(require_api_token)],
+)
 def adapter_dingtalk_resolve_operator(request: DingTalkResolveOperatorRequest):
     try:
         result = resolve_dingtalk_operator(
@@ -157,7 +177,7 @@ def adapter_dingtalk_resolve_operator(request: DingTalkResolveOperatorRequest):
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-@app.post("/workflow/start", dependencies=[Depends(require_api_token)])
+@app.post("/workflow/start", summary="创建交付工作流", tags=["交付工作流"], dependencies=[Depends(require_api_token)])
 def workflow_start(request: WorkflowStartRequest):
     try:
         workflow = start_workflow(request)
@@ -172,7 +192,7 @@ def workflow_start(request: WorkflowStartRequest):
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-@app.get("/workflow/{workflow_id}", dependencies=[Depends(require_api_token)])
+@app.get("/workflow/{workflow_id}", summary="查询交付工作流", tags=["交付工作流"], dependencies=[Depends(require_api_token)])
 def workflow_get(workflow_id: str, eventLimit: int = 50):
     try:
         return get_workflow(workflow_id, eventLimit)
@@ -182,7 +202,12 @@ def workflow_get(workflow_id: str, eventLimit: int = 50):
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-@app.post("/workflow/{workflow_id}/advance", dependencies=[Depends(require_api_token)])
+@app.post(
+    "/workflow/{workflow_id}/advance",
+    summary="推进交付工作流",
+    tags=["交付工作流"],
+    dependencies=[Depends(require_api_token)],
+)
 def workflow_advance(workflow_id: str, request: WorkflowAdvanceRequest):
     try:
         return advance_workflow(workflow_id, request)
@@ -194,7 +219,12 @@ def workflow_advance(workflow_id: str, request: WorkflowAdvanceRequest):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@app.post("/workflow/{workflow_id}/requirement", dependencies=[Depends(require_api_token)])
+@app.post(
+    "/workflow/{workflow_id}/requirement",
+    summary="提交结构化需求",
+    tags=["交付工作流"],
+    dependencies=[Depends(require_api_token)],
+)
 def workflow_requirement(workflow_id: str, request: WorkflowRequirementRequest):
     try:
         return submit_requirement(workflow_id, request)
@@ -206,7 +236,12 @@ def workflow_requirement(workflow_id: str, request: WorkflowRequirementRequest):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@app.post("/workflow/{workflow_id}/coding-result", dependencies=[Depends(require_api_token)])
+@app.post(
+    "/workflow/{workflow_id}/coding-result",
+    summary="提交编码结果",
+    tags=["交付工作流"],
+    dependencies=[Depends(require_api_token)],
+)
 def workflow_coding_result(workflow_id: str, request: WorkflowCodingResultRequest):
     try:
         return submit_coding_result(workflow_id, request)
@@ -218,7 +253,7 @@ def workflow_coding_result(workflow_id: str, request: WorkflowCodingResultReques
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@app.post("/adapter/preview", dependencies=[Depends(require_api_token)])
+@app.post("/adapter/preview", summary="预览适配器操作", tags=["适配器执行"], dependencies=[Depends(require_api_token)])
 def preview(request: AdapterRequest):
     try:
         adapter = registry.find(request.system, request.action)
@@ -229,7 +264,13 @@ def preview(request: AdapterRequest):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@app.post("/adapter/execute", response_model=AdapterResult, dependencies=[Depends(require_api_token)])
+@app.post(
+    "/adapter/execute",
+    summary="执行适配器操作",
+    tags=["适配器执行"],
+    response_model=AdapterResult,
+    dependencies=[Depends(require_api_token)],
+)
 def execute(request: AdapterRequest):
     try:
         require_execute_approval(request.params)
@@ -242,20 +283,26 @@ def execute(request: AdapterRequest):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@app.get("/adapter/status/{task_id}", response_model=AdapterStatus, dependencies=[Depends(require_api_token)])
+@app.get(
+    "/adapter/status/{task_id}",
+    summary="查询任务状态",
+    tags=["适配器执行"],
+    response_model=AdapterStatus,
+    dependencies=[Depends(require_api_token)],
+)
 def status(task_id: str):
     result = status_store.get(task_id)
     log_status(task_id, result)
     return result
 
 
-@app.get("/adapter/audit/{task_id}", dependencies=[Depends(require_api_token)])
+@app.get("/adapter/audit/{task_id}", summary="查询任务审计", tags=["适配器执行"], dependencies=[Depends(require_api_token)])
 def audit(task_id: str, limit: int = 50):
     safe_limit = max(1, min(limit, 200))
     return {"taskId": task_id, "items": find_by_task_id(task_id, safe_limit)}
 
 
-@app.post("/callbacks/yunxiao/task", dependencies=[Depends(require_api_token)])
+@app.post("/callbacks/yunxiao/task", summary="接收云效任务回调", tags=["云效回调"], dependencies=[Depends(require_api_token)])
 def yunxiao_task_callback(callback: YunxiaoTaskCallback):
     params = {
         **callback.params,
@@ -295,10 +342,16 @@ def yunxiao_task_callback(callback: YunxiaoTaskCallback):
     }
 
 
-@app.post("/callbacks/yunxiao/pipeline-failure", dependencies=[Depends(require_api_token)])
+@app.post(
+    "/callbacks/yunxiao/pipeline-failure",
+    summary="接收云效流水线失败回调",
+    tags=["云效回调"],
+    dependencies=[Depends(require_api_token)],
+)
 def yunxiao_pipeline_failure_callback(callback: YunxiaoPipelineFailureCallback):
     analysis = analyze_pipeline_failure(callback.log_tail, callback.stage_name)
     log_pipeline_failure(callback, analysis)
+    workflow = handle_pipeline_failure(callback, analysis)
     return {
         "source": "yunxiao",
         "mode": "pipeline_failure",
@@ -307,15 +360,16 @@ def yunxiao_pipeline_failure_callback(callback: YunxiaoPipelineFailureCallback):
         "buildNumber": callback.build_number,
         "stageName": callback.stage_name,
         "analysis": analysis,
+        "workflow": workflow,
     }
 
 
-@app.post(YUNXIAO_FLOW_EVENT_PATH, dependencies=[Depends(require_api_token)])
+@app.post(YUNXIAO_FLOW_EVENT_PATH, summary="接收云效流水线事件", tags=["云效回调"], dependencies=[Depends(require_api_token)])
 def yunxiao_flow_event(payload: dict[str, Any]):
     return _handle_flow_event(payload)
 
 
-@app.post(YUNXIAO_FLOW_EVENT_PUBLIC_PATH)
+@app.post(YUNXIAO_FLOW_EVENT_PUBLIC_PATH, summary="接收云效公开流水线事件", tags=["云效回调"])
 def yunxiao_flow_event_public(payload: dict[str, Any]):
     return _handle_flow_event(payload)
 
@@ -324,8 +378,8 @@ def _handle_flow_event(payload: dict[str, Any]) -> dict[str, Any]:
     status_code = str(_pick(_task_payload(payload), "statusCode", "status_code", "status", default="")).upper()
     if status_code in {"SUCCESS", "FINISH"}:
         callback = _normalize_flow_event(payload)
-        result = maybe_import_from_flow_event(payload)
-        log_apifox_import(callback.task_id, callback.operator, result)
+        result = handle_pipeline_success(payload, callback)
+        log_apifox_import(callback.task_id, callback.operator, result["apifox"])
         return {
             "source": "yunxiao",
             "mode": "flow_event",
@@ -334,7 +388,8 @@ def _handle_flow_event(payload: dict[str, Any]) -> dict[str, Any]:
             "pipelineId": callback.pipeline_id,
             "buildNumber": callback.build_number,
             "stageName": callback.stage_name,
-            "apifox": result,
+            "workflow": result["workflow"],
+            "apifox": result["apifox"],
         }
     if status_code not in {"FAIL", "FAILED", "ERROR", "CANCELED", "CANCELLED", "CANCELLING", "UNKNOWN", "UNKOWN"}:
         return {
@@ -348,6 +403,7 @@ def _handle_flow_event(payload: dict[str, Any]) -> dict[str, Any]:
     callback = _normalize_flow_event(payload)
     analysis = analyze_pipeline_failure(callback.log_tail, callback.stage_name)
     log_pipeline_failure(callback, analysis)
+    workflow = handle_pipeline_failure(callback, analysis)
     return {
         "source": "yunxiao",
         "mode": "flow_event",
@@ -356,6 +412,7 @@ def _handle_flow_event(payload: dict[str, Any]) -> dict[str, Any]:
         "buildNumber": callback.build_number,
         "stageName": callback.stage_name,
         "analysis": analysis,
+        "workflow": workflow,
     }
 
 
@@ -366,6 +423,7 @@ def _normalize_flow_event(payload: dict[str, Any]) -> YunxiaoPipelineFailureCall
     pipeline_id = _pick(task, "pipelineId", "pipeline_id", "pipelineID", "flowId", "flow_id", default="unknown")
     build_number = _pick(task, "buildNumber", "build_number", "buildNo", "build_no", "runId", "run_id", default="0")
     requirement_id = _pick(params, "REQUIREMENT_ID", "requirementId", "requirement_id", "workitemId", "workitem_id", "taskId", "task_id")
+    workflow_id = _pick(params, "WORKFLOW_ID", "workflowId", "workflow_id")
     task_id = _pick(params, "TASK_ID", "taskId", "task_id")
     if not task_id and requirement_id:
         task_id = f"rel-{requirement_id}-{build_number}"
@@ -373,6 +431,7 @@ def _normalize_flow_event(payload: dict[str, Any]) -> YunxiaoPipelineFailureCall
         task_id = f"yx-flow-{pipeline_id}-{build_number}"
     return YunxiaoPipelineFailureCallback(
         taskId=task_id,
+        workflowId=workflow_id,
         pipelineId=str(pipeline_id),
         buildNumber=str(build_number),
         stageName=str(_pick(task, "stageName", "stage_name", default="yunxiao-flow-event"))

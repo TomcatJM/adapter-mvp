@@ -118,6 +118,71 @@ def ensure_schema() -> None:
                 )
                 cursor.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS adapter_yunxiao_account_config (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
+                        account_name VARCHAR(128) NOT NULL COMMENT '账号配置名称，例如 default',
+                        auth_type VARCHAR(32) NOT NULL DEFAULT 'acs_ak' COMMENT '鉴权类型：acs_ak阿里云AK签名，legacy_token旧云效Token',
+                        access_key_id VARCHAR(256) NULL COMMENT '阿里云AccessKey ID，acs_ak必填',
+                        access_key_secret VARCHAR(1024) NULL COMMENT '阿里云AccessKey Secret，acs_ak必填',
+                        legacy_token TEXT NULL COMMENT '旧云效Token，legacy_token必填',
+                        security_token TEXT NULL COMMENT '临时安全令牌，可选',
+                        endpoint VARCHAR(256) NOT NULL DEFAULT 'devops.cn-hangzhou.aliyuncs.com' COMMENT '云效OpenAPI Endpoint',
+                        remark VARCHAR(512) NULL COMMENT '备注',
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                        UNIQUE KEY uk_adapter_yunxiao_account_name (account_name)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter云效账号AK配置表'
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS adapter_yunxiao_project_config (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
+                        project_name VARCHAR(128) NOT NULL COMMENT '业务项目名称，例如 jdb-school-crm',
+                        account_name VARCHAR(128) NOT NULL COMMENT '云效账号配置名称，关联adapter_yunxiao_account_config.account_name',
+                        organization_id VARCHAR(128) NOT NULL COMMENT '云效企业/组织ID',
+                        project_id VARCHAR(128) NOT NULL COMMENT '云效项目ID或spaceIdentifier',
+                        sprint_id VARCHAR(128) NULL COMMENT '云效迭代ID，旧接口可选',
+                        workitem_category VARCHAR(32) NOT NULL DEFAULT 'Req' COMMENT '云效工作项分类，例如 Req',
+                        workitem_type_identifier VARCHAR(128) NOT NULL COMMENT '云效工作项类型ID',
+                        default_assignee VARCHAR(128) NOT NULL COMMENT '默认负责人云效账号ID',
+                        priority_field_id VARCHAR(128) NULL COMMENT '优先级字段ID，可选',
+                        priority_default_value VARCHAR(128) NULL COMMENT '默认优先级值，可选',
+                        participants TEXT NULL COMMENT '参与人，逗号分隔',
+                        trackers TEXT NULL COMMENT '关注人，逗号分隔',
+                        verifier VARCHAR(128) NULL COMMENT '验证人云效账号ID',
+                        remark VARCHAR(512) NULL COMMENT '备注',
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                        UNIQUE KEY uk_adapter_yunxiao_project_name (project_name),
+                        KEY idx_adapter_yunxiao_project_account_name (account_name),
+                        KEY idx_adapter_yunxiao_project_id (project_id)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter云效项目映射配置表'
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS adapter_yunxiao_project_member (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
+                        project_name VARCHAR(128) NOT NULL COMMENT '业务项目名称，例如 jdb-school-crm',
+                        member_name VARCHAR(128) NOT NULL COMMENT '负责人姓名，例如 姬志猛',
+                        yunxiao_account_id VARCHAR(128) NOT NULL COMMENT '云效账号ID',
+                        is_default TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否默认负责人：1是，0否',
+                        enabled TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否启用：1启用，0停用',
+                        remark VARCHAR(512) NULL COMMENT '备注',
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                        UNIQUE KEY uk_adapter_yunxiao_project_member_name (project_name, member_name),
+                        UNIQUE KEY uk_adapter_yunxiao_project_member_account (project_name, yunxiao_account_id),
+                        KEY idx_adapter_yunxiao_project_member_default (project_name, is_default, enabled)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter云效项目人员配置表'
+                    """
+                )
+                cursor.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS adapter_dingtalk_app_config (
                         id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
                         config_name VARCHAR(128) NOT NULL COMMENT '配置名称，例如 default',
@@ -285,6 +350,14 @@ def _ensure_comments(cursor) -> None:
         "ALTER TABLE adapter_apifox_pipeline_config MODIFY remark VARCHAR(512) NULL COMMENT '备注'",
         "ALTER TABLE adapter_apifox_pipeline_config MODIFY created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'",
         "ALTER TABLE adapter_apifox_pipeline_config MODIFY updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'",
+        "ALTER TABLE adapter_yunxiao_account_config COMMENT='Adapter云效账号AK配置表'",
+        "ALTER TABLE adapter_yunxiao_account_config ADD COLUMN auth_type VARCHAR(32) NOT NULL DEFAULT 'acs_ak' COMMENT '鉴权类型：acs_ak阿里云AK签名，legacy_token旧云效Token' AFTER account_name",
+        "ALTER TABLE adapter_yunxiao_account_config MODIFY access_key_id VARCHAR(256) NULL COMMENT '阿里云AccessKey ID，acs_ak必填'",
+        "ALTER TABLE adapter_yunxiao_account_config MODIFY access_key_secret VARCHAR(1024) NULL COMMENT '阿里云AccessKey Secret，acs_ak必填'",
+        "ALTER TABLE adapter_yunxiao_account_config ADD COLUMN legacy_token TEXT NULL COMMENT '旧云效Token，legacy_token必填' AFTER access_key_secret",
+        "ALTER TABLE adapter_yunxiao_project_config COMMENT='Adapter云效项目映射配置表'",
+        "ALTER TABLE adapter_yunxiao_project_config ADD COLUMN sprint_id VARCHAR(128) NULL COMMENT '云效迭代ID，旧接口可选' AFTER project_id",
+        "ALTER TABLE adapter_yunxiao_project_member COMMENT='Adapter云效项目人员配置表'",
         "ALTER TABLE adapter_dingtalk_app_config COMMENT='Adapter钉钉文档读取旧版混合配置表'",
         "ALTER TABLE adapter_dingtalk_app_config ADD COLUMN operator_id VARCHAR(128) NULL COMMENT '钉钉文档操作人userId' AFTER token_header_name",
         "ALTER TABLE adapter_dingtalk_app COMMENT='Adapter钉钉应用表'",
@@ -592,6 +665,173 @@ def update_workflow_coding_result(
     )
 
 
+def update_workflow_yunxiao_task_created(
+    *,
+    workflow_id: str,
+    from_status: str,
+    yunxiao_task_id: str,
+    context: dict[str, Any],
+    operator: str | None,
+    event_payload: dict[str, Any],
+) -> dict[str, Any]:
+    return _update_workflow_state(
+        workflow_id=workflow_id,
+        expected_status=from_status,
+        to_status="YUNXIAO_TASK_CREATED",
+        context=context,
+        operator=operator,
+        event_type="yunxiao_workitem_created",
+        message="Yunxiao workitem created",
+        event_payload=event_payload,
+        yunxiao_task_id=yunxiao_task_id,
+        clear_error=True,
+    )
+
+
+def update_workflow_coding_requested(
+    *,
+    workflow_id: str,
+    context: dict[str, Any],
+    operator: str | None,
+    event_payload: dict[str, Any],
+) -> dict[str, Any]:
+    return _update_workflow_state(
+        workflow_id=workflow_id,
+        expected_status="YUNXIAO_TASK_CREATED",
+        to_status="CODING_REQUESTED",
+        context=context,
+        operator=operator,
+        event_type="coding_requested",
+        message="Coding requested",
+        event_payload=event_payload,
+        clear_error=True,
+    )
+
+
+def update_workflow_pipeline_success(
+    *,
+    workflow_id: str,
+    from_status: str,
+    pipeline_id: str | None,
+    build_number: str | None,
+    branch_name: str | None,
+    commit_id: str | None,
+    context: dict[str, Any],
+    operator: str | None,
+    event_payload: dict[str, Any],
+) -> dict[str, Any]:
+    return _update_workflow_state(
+        workflow_id=workflow_id,
+        expected_status=from_status,
+        to_status="PIPELINE_SUCCESS",
+        context=context,
+        operator=operator,
+        event_type="pipeline_success",
+        message="Yunxiao pipeline succeeded",
+        event_payload=event_payload,
+        branch_name=branch_name,
+        commit_id=commit_id,
+        yunxiao_pipeline_id=pipeline_id,
+        yunxiao_build_number=build_number,
+        clear_error=True,
+    )
+
+
+def update_workflow_pipeline_failed(
+    *,
+    workflow_id: str,
+    from_status: str,
+    pipeline_id: str | None,
+    build_number: str | None,
+    branch_name: str | None,
+    commit_id: str | None,
+    context: dict[str, Any],
+    operator: str | None,
+    error: str,
+    event_payload: dict[str, Any],
+) -> dict[str, Any]:
+    return _update_workflow_state(
+        workflow_id=workflow_id,
+        expected_status=from_status,
+        to_status="PIPELINE_FAILED",
+        context=context,
+        operator=operator,
+        event_type="pipeline_failed",
+        message=str(error or "Yunxiao pipeline failed")[:1024],
+        event_payload=event_payload,
+        branch_name=branch_name,
+        commit_id=commit_id,
+        yunxiao_pipeline_id=pipeline_id,
+        yunxiao_build_number=build_number,
+        last_error=str(error or "Yunxiao pipeline failed")[:2048],
+    )
+
+
+def update_workflow_apifox_synced(
+    *,
+    workflow_id: str,
+    context: dict[str, Any],
+    apifox_project_id: str | None,
+    operator: str | None,
+    event_payload: dict[str, Any],
+) -> dict[str, Any]:
+    return _update_workflow_state(
+        workflow_id=workflow_id,
+        expected_status="PIPELINE_SUCCESS",
+        to_status="APIFOX_SYNCED",
+        context=context,
+        operator=operator,
+        event_type="apifox_synced",
+        message="Apifox OpenAPI synced",
+        event_payload=event_payload,
+        apifox_project_id=apifox_project_id,
+        clear_error=True,
+    )
+
+
+def record_workflow_apifox_result(
+    *,
+    workflow_id: str,
+    status: str,
+    context: dict[str, Any],
+    operator: str | None,
+    event_type: str,
+    message: str,
+    event_payload: dict[str, Any],
+) -> dict[str, Any]:
+    _require_configured()
+    ensure_schema()
+    clipped_message = str(message or "")[:1024]
+    with connect() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE adapter_workflow_instance
+                SET context_json = %s,
+                    last_error = %s
+                WHERE workflow_id = %s
+                  AND status = %s
+                """,
+                (dumps(context), clipped_message, workflow_id, status),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError(f"Workflow status is not {status}: {workflow_id}")
+            _insert_workflow_event(
+                cursor,
+                workflow_id=workflow_id,
+                event_type=event_type,
+                from_status=status,
+                to_status=status,
+                operator=operator,
+                message=clipped_message,
+                payload=event_payload,
+            )
+    workflow = find_workflow_instance(workflow_id)
+    if not workflow:
+        raise ValueError(f"Workflow not found: {workflow_id}")
+    return workflow
+
+
 def mark_workflow_failed(
     *,
     workflow_id: str,
@@ -732,6 +972,182 @@ def find_apifox_pipeline_config(pipeline_id: str) -> dict[str, Any] | None:
         return None
 
 
+def find_yunxiao_account_config(account_name: str) -> dict[str, Any] | None:
+    if not configured() or not account_name:
+        return None
+    try:
+        ensure_schema()
+        with connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        account_name,
+                        auth_type,
+                        access_key_id,
+                        access_key_secret,
+                        legacy_token,
+                        security_token,
+                        endpoint,
+                        remark
+                    FROM adapter_yunxiao_account_config
+                    WHERE LOWER(account_name) = LOWER(%s)
+                    LIMIT 1
+                    """,
+                    (account_name,),
+                )
+                row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "accountName": row.get("account_name"),
+            "authType": row.get("auth_type") or "acs_ak",
+            "accessKeyId": row.get("access_key_id"),
+            "accessKeySecret": row.get("access_key_secret"),
+            "legacyToken": row.get("legacy_token"),
+            "securityToken": row.get("security_token"),
+            "endpoint": row.get("endpoint"),
+            "remark": row.get("remark"),
+        }
+    except Exception:
+        return None
+
+
+def find_yunxiao_project_config(project_name: str) -> dict[str, Any] | None:
+    if not configured() or not project_name:
+        return None
+    try:
+        ensure_schema()
+        with connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        project_name,
+                        account_name,
+                        organization_id,
+                        project_id,
+                        sprint_id,
+                        workitem_category,
+                        workitem_type_identifier,
+                        default_assignee,
+                        priority_field_id,
+                        priority_default_value,
+                        participants,
+                        trackers,
+                        verifier,
+                        remark
+                    FROM adapter_yunxiao_project_config
+                    WHERE LOWER(project_name) = LOWER(%s)
+                    LIMIT 1
+                    """,
+                    (project_name,),
+                )
+                row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "projectName": row.get("project_name"),
+            "accountName": row.get("account_name"),
+            "organizationId": row.get("organization_id"),
+            "projectId": row.get("project_id"),
+            "sprintId": row.get("sprint_id"),
+            "category": row.get("workitem_category"),
+            "workitemTypeIdentifier": row.get("workitem_type_identifier"),
+            "assignee": row.get("default_assignee"),
+            "priorityFieldId": row.get("priority_field_id"),
+            "priorityDefaultValue": row.get("priority_default_value"),
+            "participants": row.get("participants"),
+            "trackers": row.get("trackers"),
+            "verifier": row.get("verifier"),
+            "remark": row.get("remark"),
+        }
+    except Exception:
+        return None
+
+
+def find_yunxiao_project_member(project_name: str, assignee: str) -> dict[str, Any] | None:
+    if not configured() or not project_name or not assignee:
+        return None
+    try:
+        ensure_schema()
+        with connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        project_name,
+                        member_name,
+                        yunxiao_account_id,
+                        is_default,
+                        enabled,
+                        remark
+                    FROM adapter_yunxiao_project_member
+                    WHERE LOWER(project_name) = LOWER(%s)
+                      AND enabled = 1
+                      AND (
+                        LOWER(member_name) = LOWER(%s)
+                        OR yunxiao_account_id = %s
+                      )
+                    LIMIT 1
+                    """,
+                    (project_name, assignee, assignee),
+                )
+                row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "projectName": row.get("project_name"),
+            "name": row.get("member_name"),
+            "accountId": row.get("yunxiao_account_id"),
+            "isDefault": bool(row.get("is_default")),
+            "enabled": bool(row.get("enabled")),
+            "remark": row.get("remark"),
+        }
+    except Exception:
+        return None
+
+
+def find_default_yunxiao_project_member(project_name: str) -> dict[str, Any] | None:
+    if not configured() or not project_name:
+        return None
+    try:
+        ensure_schema()
+        with connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        project_name,
+                        member_name,
+                        yunxiao_account_id,
+                        is_default,
+                        enabled,
+                        remark
+                    FROM adapter_yunxiao_project_member
+                    WHERE LOWER(project_name) = LOWER(%s)
+                      AND enabled = 1
+                      AND is_default = 1
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (project_name,),
+                )
+                row = cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "projectName": row.get("project_name"),
+            "name": row.get("member_name"),
+            "accountId": row.get("yunxiao_account_id"),
+            "isDefault": bool(row.get("is_default")),
+            "enabled": bool(row.get("enabled")),
+            "remark": row.get("remark"),
+        }
+    except Exception:
+        return None
+
+
 def find_dingtalk_app_config(config_name: str) -> dict[str, Any] | None:
     if not configured() or not config_name:
         return None
@@ -857,6 +1273,11 @@ def _update_workflow_state(
     event_payload: dict[str, Any],
     branch_name: str | None = None,
     commit_id: str | None = None,
+    yunxiao_task_id: str | None = None,
+    yunxiao_pipeline_id: str | None = None,
+    yunxiao_build_number: str | None = None,
+    apifox_project_id: str | None = None,
+    last_error: str | None = None,
     clear_error: bool = False,
 ) -> dict[str, Any]:
     _require_configured()
@@ -869,6 +1290,21 @@ def _update_workflow_state(
     if commit_id is not None:
         assignments.append("commit_id = %s")
         params.append(commit_id)
+    if yunxiao_task_id is not None:
+        assignments.append("yunxiao_task_id = %s")
+        params.append(yunxiao_task_id)
+    if yunxiao_pipeline_id is not None:
+        assignments.append("yunxiao_pipeline_id = %s")
+        params.append(yunxiao_pipeline_id)
+    if yunxiao_build_number is not None:
+        assignments.append("yunxiao_build_number = %s")
+        params.append(yunxiao_build_number)
+    if apifox_project_id is not None:
+        assignments.append("apifox_project_id = %s")
+        params.append(apifox_project_id)
+    if last_error is not None:
+        assignments.append("last_error = %s")
+        params.append(last_error)
     if clear_error:
         assignments.append("last_error = NULL")
     params.extend([workflow_id, expected_status])

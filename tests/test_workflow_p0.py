@@ -128,6 +128,7 @@ class WorkflowP0Test(unittest.TestCase):
                 "wf-test-1",
                 WorkflowRequirementRequest(
                     summary="新增接口",
+                    assigneeName="姬志猛",
                     acceptanceCriteria=["可创建"],
                     affectedRepos=["jdb-school-gmc"],
                     apiChanges=[{"method": "POST", "path": "/demo"}],
@@ -136,6 +137,7 @@ class WorkflowP0Test(unittest.TestCase):
 
         self.assertEqual(result["workflow"]["status"], "REQUIREMENT_PARSED")
         self.assertEqual(result["workflow"]["context"]["requirement"]["summary"], "新增接口")
+        self.assertEqual(result["workflow"]["context"]["requirement"]["assigneeName"], "姬志猛")
 
     def test_submit_coding_result_moves_to_code_submitted(self) -> None:
         from app.models import WorkflowCodingResultRequest

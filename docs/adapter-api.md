@@ -221,9 +221,82 @@ P0 provides a persistent workflow ledger:
 
 - `start` creates a `CREATED` instance from a DingTalk/Alidocs URL.
 - `advance` reads the DingTalk document when status is `CREATED` and moves to `DOC_READ`.
+- `advance` creates a Yunxiao workitem when status is `REQUIREMENT_PARSED`, writes `yunxiaoTaskId`, records `yunxiao_workitem_created`, then moves to `CODING_REQUESTED`.
 - `requirement` stores Codex structured requirement output and moves to `REQUIREMENT_PARSED`.
 - `coding-result` stores branch/commit/MR/test summary and moves to `CODE_SUBMITTED`.
 - `GET /workflow/{workflow_id}` returns the instance plus recent workflow events.
+
+Yunxiao workitem creation uses DB-backed configuration in normal Adapter deployments:
+
+```text
+adapter_yunxiao_account_config
+adapter_yunxiao_project_config
+```
+
+`adapter_yunxiao_account_config` stores Yunxiao account auth. `auth_type=acs_ak` stores Alibaba Cloud AK, Secret, optional STS token, and OpenAPI endpoint. `auth_type=legacy_token` stores the previous OpenClaw CLI token for compatibility. `adapter_yunxiao_project_config` stores per-project `organization_id`, `project_id`, optional `sprint_id`, workitem category/type, legacy default assignee, and optional participants/trackers/verifier fields. `adapter_yunxiao_project_member` stores project members by name and Yunxiao account ID, including the default assignee flag.
+
+Yunxiao assignee resolution order:
+
+```text
+workflow.context.requirement.assigneeId / assigneeName
+workflow.context.assigneeId / assigneeName
+adapter_yunxiao_project_member where is_default=1
+adapter_yunxiao_project_config.default_assignee legacy fallback
+```
+
+When submitting a parsed requirement, Codex or Apifox can specify the owner:
+
+```json
+{
+  "summary": "新增客户跟进记录接口",
+  "assigneeName": "姬志猛",
+  "affectedRepos": ["jdb-school-crm"]
+}
+```
+
+If `assigneeName` / `assigneeId` is provided but does not match `adapter_yunxiao_project_member`, Yunxiao task creation fails explicitly instead of silently assigning the wrong person.
+
+The project mapping key is resolved from:
+
+```text
+workflow.context.projectName
+workflow.context.requirement.projectName
+workflow.context.requirement.affectedRepos[0]
+workflow.repoUrl repository name
+YUNXIAO_DEFAULT_PROJECT_NAME
+```
+
+When MySQL is configured, missing project/account mapping fails explicitly, keeps the workflow at `REQUIREMENT_PARSED`, and records `yunxiao_workitem_create_failed`. It does not silently use a default Yunxiao project.
+
+For local development without MySQL, env fallback remains available:
+
+```text
+ALIBABA_CLOUD_ACCESS_KEY_ID
+ALIBABA_CLOUD_ACCESS_KEY_SECRET
+YUNXIAO_ORGANIZATION_ID
+YUNXIAO_PROJECT_ID
+YUNXIAO_WORKITEM_TYPE_IDENTIFIER
+YUNXIAO_WORKITEM_ASSIGNEE
+```
+
+Optional env values:
+
+```text
+YUNXIAO_OPENAPI_ENDPOINT=devops.cn-hangzhou.aliyuncs.com
+YUNXIAO_WORKITEM_CATEGORY=Req
+YUNXIAO_PRIORITY_FIELD_ID
+YUNXIAO_PRIORITY_DEFAULT_VALUE
+```
+
+Use `scripts/upsert_yunxiao_config.py` to maintain the DB rows. The script reads AK values from environment variables and does not print secrets.
+
+Yunxiao pipeline workflow binding:
+
+- Successful `/callbacks/yunxiao/flow-event` events bind to workflow only when the payload carries `WORKFLOW_ID` / `workflowId`.
+- On success, `CODE_SUBMITTED` or `PIPELINE_RUNNING` moves to `PIPELINE_SUCCESS`.
+- If Apifox import returns `imported=true`, the workflow then moves to `APIFOX_SYNCED`.
+- If Apifox is skipped or fails, the workflow stays at `PIPELINE_SUCCESS` and records an `apifox_sync_skipped` or `apifox_sync_failed` event.
+- Failure events with `WORKFLOW_ID` move `CODE_SUBMITTED`, `PIPELINE_RUNNING`, or `PIPELINE_SUCCESS` to `PIPELINE_FAILED`.
 
 The workflow tables are:
 

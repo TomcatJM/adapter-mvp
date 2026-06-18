@@ -1,0 +1,364 @@
+# 云效流水线打通任务
+
+## 1. 任务目标
+
+把云效流水线事件和 `adapter-mvp` workflow 精确绑定，让代码提交后的构建结果能推进 workflow 状态，并在成功后触发 Apifox 同步。
+
+这个任务只做流水线绑定和状态推进，不做云效工作项创建，不做云效工作项关闭。
+
+目标状态流转：
+
+```text
+CODE_SUBMITTED
+  -> PIPELINE_RUNNING
+  -> PIPELINE_SUCCESS
+  -> APIFOX_SYNCED
+```
+
+失败时：
+
+```text
+CODE_SUBMITTED 或 PIPELINE_RUNNING
+  -> PIPELINE_FAILED
+  -> CODING_REQUESTED 或 NEEDS_HUMAN
+```
+
+## 2. 当前基础
+
+已存在：
+
+- 云效回调入口：
+  - `POST /callbacks/yunxiao/pipeline-failure`
+  - `POST /callbacks/yunxiao/flow-event`
+  - `POST /callbacks/yunxiao/flow-event/public`
+- `pipeline_agent.py` 可以做规则型失败分析。
+- `maybe_import_from_flow_event` 可以在成功事件后尝试 Apifox 导入。
+- `adapter_apifox_project_config` 和 `adapter_apifox_pipeline_config` 已用于 Apifox 项目解析。
+- `scripts/yunxiao_release_main.sh` 失败时会调用 `/callbacks/yunxiao/pipeline-failure`。
+- workflow P0 已支持 `CODE_SUBMITTED`，可以作为流水线绑定的输入状态。
+
+第一版已完成：
+
+- 成功/失败事件携带 `WORKFLOW_ID` / `workflowId` 时，可以绑定 workflow。
+- 成功后推进到 `PIPELINE_SUCCESS`。
+- Apifox `imported=true` 后推进到 `APIFOX_SYNCED`。
+- Apifox skipped/failed 时停在 `PIPELINE_SUCCESS` 并记录事件。
+- 失败后推进到 `PIPELINE_FAILED`。
+
+未完成增强：
+
+- 不带 `WORKFLOW_ID` 时的兜底匹配。
+- `PIPELINE_RUNNING` 状态推进。
+- 成功后触发云效关闭任务的交接点。
+
+## 3. 职责边界
+
+本任务负责：
+
+- 标准化云效回调 payload。
+- 找到对应 workflow。
+- 记录 pipelineId、buildNumber、branchName、commitId。
+- 成功后调用现有 Apifox 同步逻辑。
+- Apifox 成功后推进到 `APIFOX_SYNCED`。
+- 失败后推进到 `PIPELINE_FAILED`，并保存失败分析。
+
+本任务不负责：
+
+- 创建云效工作项。
+- 关闭云效工作项。
+- 实际编码修复。
+- 修改 Apifox 导入规则本身，除非为 workflow 绑定补充必要字段。
+
+## 4. 绑定策略
+
+匹配优先级：
+
+1. `workflowId`
+2. `WORKFLOW_ID`
+3. `taskId` / `TASK_ID` 对应 workflow 的 `yunxiao_task_id` 或 release task id
+4. `pipelineId + buildNumber`
+5. `branchName + commitId`
+
+强烈建议云效流水线参数显式带：
+
+```text
+WORKFLOW_ID=wf-xxx
+REQUIREMENT_ID=云效主工作项ID
+TASK_ID=rel-${REQUIREMENT_ID}-${BUILD_NUMBER}
+PROJECT_NAME=jdb-school-crm
+OPENAPI_URL=https://...
+```
+
+没有 `WORKFLOW_ID` 时可以兜底匹配，但不能在多个 workflow 候选之间猜。
+
+如果匹配到多个 workflow：
+
+```text
+不推进状态，写入 pipeline_match_ambiguous 事件，返回 409 或 ignored=true。
+```
+
+## 5. 建议接口
+
+### 5.1 流水线运行中回调
+
+可以扩展现有 flow event，也可以新增：
+
+```http
+POST /callbacks/yunxiao/pipeline-running
+```
+
+MVP 建议先扩展现有：
+
+```http
+POST /callbacks/yunxiao/flow-event
+POST /callbacks/yunxiao/flow-event/public
+```
+
+当 status 为 running 类状态时：
+
+```text
+CODE_SUBMITTED -> PIPELINE_RUNNING
+```
+
+### 5.2 流水线成功回调
+
+继续使用：
+
+```http
+POST /callbacks/yunxiao/flow-event
+```
+
+或补充更明确的内部语义函数：
+
+```python
+handle_pipeline_success(payload: dict) -> dict
+```
+
+处理：
+
+```text
+PIPELINE_RUNNING 或 CODE_SUBMITTED
+  -> PIPELINE_SUCCESS
+  -> maybe_import_from_flow_event
+  -> APIFOX_SYNCED 或 NEEDS_HUMAN
+```
+
+### 5.3 流水线失败回调
+
+复用：
+
+```http
+POST /callbacks/yunxiao/pipeline-failure
+```
+
+建议给 `YunxiaoPipelineFailureCallback` 增加可选字段：
+
+```json
+{
+  "workflowId": "wf-xxx"
+}
+```
+
+处理：
+
+```text
+PIPELINE_RUNNING 或 CODE_SUBMITTED
+  -> PIPELINE_FAILED
+```
+
+如果失败类型明确可修复，返回：
+
+```json
+{
+  "nextAction": "coding repair requested"
+}
+```
+
+是否自动推进回 `CODING_REQUESTED` 建议先保守：只记录 repair request，不自动改回，避免无限循环。
+
+## 6. 云效变量约定
+
+建议 CI / Release 都带这些变量：
+
+```text
+WORKFLOW_ID
+REQUIREMENT_ID
+TASK_ID
+PROJECT_NAME
+BRANCH_NAME
+COMMIT_ID
+OPENAPI_URL
+```
+
+Release 流水线现有规则：
+
+```text
+TASK_ID=rel-${REQUIREMENT_ID}-${BUILD_NUMBER}
+```
+
+CI 可以使用：
+
+```text
+TASK_ID=ci-${PIPELINE_ID}-${BUILD_NUMBER}
+```
+
+注意：CI 成功不等于需求完成。只有 Release 或被明确标记为交付流水线的成功事件，才允许触发 Apifox 和后续关单。
+
+建议增加：
+
+```text
+DELIVERY_MODE=ci|release
+```
+
+只有：
+
+```text
+DELIVERY_MODE=release
+```
+
+才进入：
+
+```text
+PIPELINE_SUCCESS -> APIFOX_SYNCED
+```
+
+## 7. Apifox 交接
+
+现有 `maybe_import_from_flow_event` 已能处理成功事件。
+
+本任务需要补的是：
+
+1. 成功导入后把结果写进 workflow context。
+2. 写入 `apifox_synced` 事件。
+3. 将 workflow 推进到 `APIFOX_SYNCED`。
+4. 导入 skipped 或失败时，不推进到 `APIFOX_SYNCED`。
+
+建议结果判断：
+
+```text
+result.imported == true -> APIFOX_SYNCED
+result.imported == false && result.enabled == false -> NEEDS_HUMAN 或保持 PIPELINE_SUCCESS
+result.imported == false && result.enabled == true -> NEEDS_HUMAN
+```
+
+MVP 可以选择：
+
+```text
+Apifox 未配置完整时，状态停在 PIPELINE_SUCCESS，并写 last_error。
+```
+
+这样不会误关云效工作项。
+
+## 8. Public 回调安全边界
+
+`/callbacks/yunxiao/flow-event/public` 是给云效无法带认证头时使用的入口。
+
+Public 路由可以接收事件，但要谨慎：
+
+- 不接收任何 token。
+- 不打印完整 payload 中的敏感片段。
+- 只允许处理白名单状态。
+- 如果要触发 Apifox 导入，必须能匹配到已有 workflow。
+- 不能因为 public payload 直接执行 Adapter execute。
+
+如果后续云效支持签名，建议增加签名校验。
+
+## 9. 状态和事件
+
+运行中：
+
+```text
+event_type = pipeline_running
+from_status = CODE_SUBMITTED
+to_status = PIPELINE_RUNNING
+payload_json = {
+  "pipelineId": "...",
+  "buildNumber": "...",
+  "branchName": "...",
+  "commitId": "..."
+}
+```
+
+成功：
+
+```text
+event_type = pipeline_success
+from_status = PIPELINE_RUNNING
+to_status = PIPELINE_SUCCESS
+```
+
+Apifox 成功：
+
+```text
+event_type = apifox_synced
+from_status = PIPELINE_SUCCESS
+to_status = APIFOX_SYNCED
+payload_json = {
+  "projectName": "...",
+  "apifoxProjectId": "...",
+  "imported": true
+}
+```
+
+失败：
+
+```text
+event_type = pipeline_failed
+from_status = PIPELINE_RUNNING
+to_status = PIPELINE_FAILED
+payload_json = {
+  "stageName": "...",
+  "analysis": {...}
+}
+```
+
+## 10. 验收标准
+
+代码验收：
+
+- 云效成功事件能按 `workflowId` 找到 workflow。
+- 成功事件能写入 pipeline 信息。
+- Apifox 导入成功后 workflow 进入 `APIFOX_SYNCED`。
+- Apifox 未配置或导入失败时不会进入 `APIFOX_SYNCED`。
+- 失败事件能进入 `PIPELINE_FAILED` 并保存失败分析。
+- 多个 workflow 候选时不会猜测推进。
+
+测试验收：
+
+- 单测覆盖 `workflowId` 精确匹配。
+- 单测覆盖 `TASK_ID` / `yunxiao_task_id` 兜底匹配。
+- 单测覆盖成功后 Apifox imported=true。
+- 单测覆盖 Apifox skipped/failed。
+- 单测覆盖流水线失败分析落入 workflow context。
+- 单测覆盖 public route 不需要 token，但不能 execute。
+
+联调验收：
+
+- 云效测试流水线带 `WORKFLOW_ID` 触发成功事件。
+- Adapter workflow 能看到 `PIPELINE_SUCCESS` 和 `APIFOX_SYNCED`。
+- Apifox 项目能看到接口更新。
+- 失败流水线能在 Adapter workflow 中看到失败阶段和分析结果。
+
+## 11. 建议实现文件
+
+建议新增：
+
+```text
+app/yunxiao_pipeline.py
+tests/test_yunxiao_pipeline_workflow_binding.py
+```
+
+可能需要扩展：
+
+```text
+app/main.py
+app/workflow.py
+app/db.py
+app/models.py
+app/apifox.py
+sql/mysql_schema.sql
+docs/adapter-api.md
+docs/yunxiao-ci-release-writeback.md
+```
+
+注意：流水线任务和云效工作项创建/关闭可以并行，但都要以 workflow 状态机为事实来源。

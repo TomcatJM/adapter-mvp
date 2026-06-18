@@ -35,8 +35,8 @@ def _get_decorator_call(function: ast.FunctionDef) -> ast.Call:
 
 
 def _assert_requires_api_token(testcase: unittest.TestCase, decorator: ast.Call) -> None:
-    testcase.assertEqual(len(decorator.keywords), 1)
-    keyword = decorator.keywords[0]
+    keyword = _find_keyword(decorator, "dependencies")
+    testcase.assertIsNotNone(keyword)
     testcase.assertEqual(keyword.arg, "dependencies")
     testcase.assertIsInstance(keyword.value, ast.List)
     testcase.assertEqual(len(keyword.value.elts), 1)
@@ -45,6 +45,13 @@ def _assert_requires_api_token(testcase: unittest.TestCase, decorator: ast.Call)
     testcase.assertEqual(ast.unparse(depends_call.func), "Depends")
     testcase.assertEqual(len(depends_call.args), 1)
     testcase.assertEqual(ast.unparse(depends_call.args[0]), "require_api_token")
+
+
+def _find_keyword(decorator: ast.Call, name: str) -> ast.keyword | None:
+    for keyword in decorator.keywords:
+        if keyword.arg == name:
+            return keyword
+    return None
 
 
 class FlowEventRouteTest(unittest.TestCase):
@@ -67,7 +74,7 @@ class FlowEventRouteTest(unittest.TestCase):
         decorator = _get_decorator_call(function)
         self.assertEqual(ast.unparse(decorator.func), "app.post")
         self.assertEqual(ast.unparse(decorator.args[0]), "YUNXIAO_FLOW_EVENT_PUBLIC_PATH")
-        self.assertFalse(decorator.keywords)
+        self.assertIsNone(_find_keyword(decorator, "dependencies"))
 
     def test_dingtalk_config_route_requires_token(self) -> None:
         module = _load_module()

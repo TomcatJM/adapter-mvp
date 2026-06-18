@@ -51,6 +51,62 @@ CREATE TABLE IF NOT EXISTS adapter_apifox_pipeline_config (
     KEY idx_adapter_apifox_pipeline_project_name (project_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter Apifox流水线项目映射配置表';
 
+CREATE TABLE IF NOT EXISTS adapter_yunxiao_account_config (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
+    account_name VARCHAR(128) NOT NULL COMMENT '账号配置名称，例如 default',
+    auth_type VARCHAR(32) NOT NULL DEFAULT 'acs_ak' COMMENT '鉴权类型：acs_ak阿里云AK签名，legacy_token旧云效Token',
+    access_key_id VARCHAR(256) NULL COMMENT '阿里云AccessKey ID，acs_ak必填',
+    access_key_secret VARCHAR(1024) NULL COMMENT '阿里云AccessKey Secret，acs_ak必填',
+    legacy_token TEXT NULL COMMENT '旧云效Token，legacy_token必填',
+    security_token TEXT NULL COMMENT '临时安全令牌，可选',
+    endpoint VARCHAR(256) NOT NULL DEFAULT 'devops.cn-hangzhou.aliyuncs.com' COMMENT '云效OpenAPI Endpoint',
+    remark VARCHAR(512) NULL COMMENT '备注',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY uk_adapter_yunxiao_account_name (account_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter云效账号AK配置表';
+
+CREATE TABLE IF NOT EXISTS adapter_yunxiao_project_config (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
+    project_name VARCHAR(128) NOT NULL COMMENT '业务项目名称，例如 jdb-school-crm',
+    account_name VARCHAR(128) NOT NULL COMMENT '云效账号配置名称，关联adapter_yunxiao_account_config.account_name',
+    organization_id VARCHAR(128) NOT NULL COMMENT '云效企业/组织ID',
+    project_id VARCHAR(128) NOT NULL COMMENT '云效项目ID或spaceIdentifier',
+    sprint_id VARCHAR(128) NULL COMMENT '云效迭代ID，旧接口可选',
+    workitem_category VARCHAR(32) NOT NULL DEFAULT 'Req' COMMENT '云效工作项分类，例如 Req',
+    workitem_type_identifier VARCHAR(128) NOT NULL COMMENT '云效工作项类型ID',
+    default_assignee VARCHAR(128) NOT NULL COMMENT '默认负责人云效账号ID',
+    priority_field_id VARCHAR(128) NULL COMMENT '优先级字段ID，可选',
+    priority_default_value VARCHAR(128) NULL COMMENT '默认优先级值，可选',
+    participants TEXT NULL COMMENT '参与人，逗号分隔',
+    trackers TEXT NULL COMMENT '关注人，逗号分隔',
+    verifier VARCHAR(128) NULL COMMENT '验证人云效账号ID',
+    remark VARCHAR(512) NULL COMMENT '备注',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY uk_adapter_yunxiao_project_name (project_name),
+    KEY idx_adapter_yunxiao_project_account_name (account_name),
+    KEY idx_adapter_yunxiao_project_id (project_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter云效项目映射配置表';
+
+CREATE TABLE IF NOT EXISTS adapter_yunxiao_project_member (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
+    project_name VARCHAR(128) NOT NULL COMMENT '业务项目名称，例如 jdb-school-crm',
+    member_name VARCHAR(128) NOT NULL COMMENT '负责人姓名，例如 姬志猛',
+    yunxiao_account_id VARCHAR(128) NOT NULL COMMENT '云效账号ID',
+    is_default TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否默认负责人：1是，0否',
+    enabled TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否启用：1启用，0停用',
+    remark VARCHAR(512) NULL COMMENT '备注',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY uk_adapter_yunxiao_project_member_name (project_name, member_name),
+    UNIQUE KEY uk_adapter_yunxiao_project_member_account (project_name, yunxiao_account_id),
+    KEY idx_adapter_yunxiao_project_member_default (project_name, is_default, enabled)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter云效项目人员配置表';
+
 CREATE TABLE IF NOT EXISTS adapter_dingtalk_app_config (
     id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
     config_name VARCHAR(128) NOT NULL COMMENT '配置名称，例如 default',

@@ -1,0 +1,717 @@
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import os
+import re
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+from datetime import datetime, timezone
+from typing import Any
+
+from app import db
+
+
+DEFAULT_ENDPOINT = "devops.cn-hangzhou.aliyuncs.com"
+OPENAPI_VERSION = "2021-06-25"
+CREATE_WORKITEM_ACTION = "CreateWorkitemV2"
+SECRET_RE = re.compile(
+    r"(?i)(token|secret|password|passwd|cookie|authorization|access[_-]?key)([=:]\s*)[^\s,;]+"
+)
+SECRET_KEYWORDS = ("token", "secret", "password", "passwd", "cookie", "authorization", "accesskey", "access_key")
+
+
+class YunxiaoError(RuntimeError):
+    pass
+
+
+def create_yunxiao_workitem(workflow: dict[str, Any], operator: str | None = None) -> dict[str, Any]:
+    config = _load_config(workflow)
+    payload = build_create_workitem_payload(workflow, config, operator)
+    if config.get("authType") == "legacy_token":
+        response = _request_yunxiao_legacy_openapi(payload=payload, config=config, timeout=config["timeout"])
+    else:
+        organization_id = urllib.parse.quote(config["organizationId"], safe="")
+        response = _request_yunxiao_openapi(
+            method="POST",
+            path=f"/organization/{organization_id}/workitem",
+            action=CREATE_WORKITEM_ACTION,
+            payload=payload,
+            config=config,
+            timeout=config["timeout"],
+        )
+    workitem_id = _extract_workitem_identifier(response)
+    if not workitem_id:
+        raise YunxiaoError(f"Yunxiao create workitem failed: {_response_error(response)}")
+    return {
+        "workitemIdentifier": workitem_id,
+        "requestId": _pick(response, "requestId", "RequestId"),
+        "projectId": config["projectId"],
+        "projectName": config.get("projectName"),
+        "organizationId": config["organizationId"],
+        "category": config["category"],
+        "workitemTypeIdentifier": config["workitemTypeIdentifier"],
+        "assignee": {
+            "name": config.get("assigneeName"),
+            "accountId": config.get("assignee"),
+            "source": config.get("assigneeSource"),
+        },
+        "title": payload["subject"],
+        "configSource": config.get("configSource"),
+        "authType": config.get("authType"),
+        "response": _safe_response(response),
+    }
+
+
+def build_create_workitem_payload(
+    workflow: dict[str, Any],
+    config: dict[str, Any],
+    operator: str | None = None,
+) -> dict[str, Any]:
+    requirement = (workflow.get("context") or {}).get("requirement") or {}
+    title = _clean_text(requirement.get("summary")) or _clean_text(workflow.get("requirementKey"))
+    if not title:
+        raise YunxiaoError("Workflow requirement summary is required before creating Yunxiao workitem")
+
+    payload: dict[str, Any] = {
+        "subject": _clip(_sanitize(title), 256),
+        "description": _build_description(workflow, requirement, operator),
+        "assignedTo": config["assignee"],
+        "spaceIdentifier": config["projectId"],
+        "category": config["category"],
+        "workitemTypeIdentifier": config["workitemTypeIdentifier"],
+    }
+
+    field_values = []
+    if config.get("priorityFieldId") and config.get("priorityDefaultValue"):
+        field_values.append(
+            {
+                "fieldIdentifier": config["priorityFieldId"],
+                "value": config["priorityDefaultValue"],
+            }
+        )
+    if field_values:
+        payload["fieldValueList"] = field_values
+
+    participants = _csv(config.get("participants"))
+    if participants:
+        payload["participants"] = participants
+    trackers = _csv(config.get("trackers"))
+    if trackers:
+        payload["trackers"] = trackers
+    verifier = _clean_text(config.get("verifier"))
+    if verifier:
+        payload["verifier"] = verifier
+    sprint_id = _clean_text(config.get("sprintId"))
+    if sprint_id:
+        payload["sprint"] = sprint_id
+    return payload
+
+
+def _request_yunxiao_openapi(
+    *,
+    method: str,
+    path: str,
+    action: str,
+    payload: dict[str, Any] | None,
+    config: dict[str, Any],
+    timeout: int,
+) -> Any:
+    body = b""
+    if payload is not None:
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+    content_hash = hashlib.sha256(body).hexdigest()
+    headers = _signed_headers(config, action, content_hash)
+    authorization = _authorization_header(
+        method=method.upper(),
+        path=path,
+        query="",
+        headers=headers,
+        content_hash=content_hash,
+        access_key_id=config["accessKeyId"],
+        access_key_secret=config["accessKeySecret"],
+    )
+    request_headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json; charset=utf-8",
+        "Authorization": authorization,
+        **{_http_header_name(key): value for key, value in headers.items()},
+    }
+    url = f"{config['scheme']}://{config['endpoint']}{path}"
+    request = urllib.request.Request(url, data=body, method=method.upper(), headers=request_headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            text = response.read().decode("utf-8", errors="replace")
+            return _parse_json(text)
+    except urllib.error.HTTPError as exc:
+        body_text = exc.read().decode("utf-8", errors="replace")
+        raise YunxiaoError(f"Yunxiao API failed: status={exc.code} {_parse_error_detail(body_text)}") from exc
+    except urllib.error.URLError as exc:
+        raise YunxiaoError(f"Yunxiao API network error: {_sanitize(str(exc))[:1000]}") from exc
+
+
+def _request_yunxiao_legacy_openapi(
+    *,
+    payload: dict[str, Any],
+    config: dict[str, Any],
+    timeout: int,
+) -> Any:
+    organization_id = urllib.parse.quote(config["organizationId"], safe="")
+    url = f"{config['scheme']}://{config['endpoint']}/oapi/v1/projex/organizations/{organization_id}/workitems"
+    body = _legacy_workitem_payload(payload, config)
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+        method="POST",
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json; charset=utf-8",
+            "x-yunxiao-token": config["legacyToken"],
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            text = response.read().decode("utf-8", errors="replace")
+            return _parse_json(text)
+    except urllib.error.HTTPError as exc:
+        body_text = exc.read().decode("utf-8", errors="replace")
+        raise YunxiaoError(f"Yunxiao legacy API failed: status={exc.code} {_parse_error_detail(body_text)}") from exc
+    except urllib.error.URLError as exc:
+        raise YunxiaoError(f"Yunxiao legacy API network error: {_sanitize(str(exc))[:1000]}") from exc
+
+
+def _legacy_workitem_payload(payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    legacy_payload = {
+        "organizationId": config["organizationId"],
+        "spaceId": config["projectId"],
+        "workitemTypeId": config["workitemTypeIdentifier"],
+        "subject": payload["subject"],
+        "description": payload["description"],
+        "assignedTo": payload["assignedTo"],
+        "source": {"adapter": "adapter-mvp"},
+    }
+    if payload.get("sprint"):
+        legacy_payload["sprint"] = payload["sprint"]
+    return legacy_payload
+
+
+def _load_config(workflow: dict[str, Any]) -> dict[str, Any]:
+    project_name = _resolve_project_name(workflow)
+    db_config = _load_db_config(project_name, workflow)
+    if db_config:
+        return db_config
+    return _load_env_config(project_name)
+
+
+def _load_db_config(project_name: str | None, workflow: dict[str, Any]) -> dict[str, Any] | None:
+    if not db.configured():
+        return None
+    if not project_name:
+        raise YunxiaoError(
+            "Yunxiao project name is unresolved. "
+            "Set workflow context.projectName, requirement.affectedRepos, repoUrl, or YUNXIAO_DEFAULT_PROJECT_NAME."
+        )
+
+    project_config = db.find_yunxiao_project_config(project_name)
+    if not project_config:
+        raise YunxiaoError(
+            "Yunxiao project config missing: "
+            f"projectName={project_name}. Configure adapter_yunxiao_project_config."
+        )
+
+    account_name = _clean_text(project_config.get("accountName"))
+    if not account_name:
+        raise YunxiaoError(
+            "Yunxiao project config is invalid: "
+            f"projectName={project_name} account_name is required"
+        )
+    account_config = db.find_yunxiao_account_config(account_name)
+    if not account_config:
+        raise YunxiaoError(
+            "Yunxiao account config missing: "
+            f"accountName={account_name}. Configure adapter_yunxiao_account_config."
+        )
+
+    scheme, endpoint = _normalize_endpoint(account_config.get("endpoint") or DEFAULT_ENDPOINT)
+    auth_type = _normalize_auth_type(account_config.get("authType"))
+    assignee = _resolve_db_assignee(
+        {
+            **project_config,
+            "workflowContext": workflow.get("context") or {},
+        },
+        workflow_project_name=project_name,
+    )
+    config = {
+        "configSource": "db",
+        "authType": auth_type,
+        "projectName": project_config.get("projectName") or project_name,
+        "accountName": account_config.get("accountName") or account_name,
+        "scheme": scheme,
+        "endpoint": endpoint,
+        "accessKeyId": account_config.get("accessKeyId"),
+        "accessKeySecret": account_config.get("accessKeySecret"),
+        "legacyToken": account_config.get("legacyToken"),
+        "securityToken": account_config.get("securityToken"),
+        "organizationId": project_config.get("organizationId"),
+        "projectId": project_config.get("projectId"),
+        "sprintId": project_config.get("sprintId"),
+        "category": project_config.get("category") or "Req",
+        "workitemTypeIdentifier": project_config.get("workitemTypeIdentifier"),
+        "assignee": assignee.get("accountId"),
+        "assigneeName": assignee.get("name"),
+        "assigneeSource": assignee.get("source"),
+        "priorityFieldId": project_config.get("priorityFieldId"),
+        "priorityDefaultValue": project_config.get("priorityDefaultValue"),
+        "participants": project_config.get("participants"),
+        "trackers": project_config.get("trackers"),
+        "verifier": project_config.get("verifier"),
+        "timeout": _parse_timeout(_first_env("YUNXIAO_OPENAPI_TIMEOUT") or "30"),
+    }
+    _validate_config(config, _db_required(config))
+    config["timeout"] = max(5, min(int(config["timeout"] or 30), 180))
+    return config
+
+
+def _load_env_config(project_name: str | None) -> dict[str, Any]:
+    scheme, endpoint = _normalize_endpoint(
+        _first_env("YUNXIAO_OPENAPI_ENDPOINT", "YUNXIAO_OPENAPI_BASE_URL") or DEFAULT_ENDPOINT
+    )
+    config = {
+        "configSource": "env",
+        "authType": "acs_ak",
+        "projectName": project_name,
+        "scheme": scheme,
+        "endpoint": endpoint,
+        "accessKeyId": _first_env("ALIBABA_CLOUD_ACCESS_KEY_ID", "ALIYUN_ACCESS_KEY_ID"),
+        "accessKeySecret": _first_env("ALIBABA_CLOUD_ACCESS_KEY_SECRET", "ALIYUN_ACCESS_KEY_SECRET"),
+        "securityToken": _first_env("ALIBABA_CLOUD_SECURITY_TOKEN", "ALIYUN_SECURITY_TOKEN"),
+        "organizationId": _first_env("YUNXIAO_ORGANIZATION_ID", "YUNXIAO_ORG_ID"),
+        "projectId": _first_env("YUNXIAO_PROJECT_ID", "YUNXIAO_SPACE_IDENTIFIER"),
+        "category": _first_env("YUNXIAO_WORKITEM_CATEGORY") or "Req",
+        "workitemTypeIdentifier": _first_env(
+            "YUNXIAO_WORKITEM_TYPE_IDENTIFIER",
+            "YUNXIAO_WORKITEM_TYPE_ID",
+        ),
+        "assignee": _first_env("YUNXIAO_WORKITEM_ASSIGNEE", "YUNXIAO_ASSIGNED_TO"),
+        "assigneeName": _first_env("YUNXIAO_WORKITEM_ASSIGNEE_NAME"),
+        "assigneeSource": "env",
+        "priorityFieldId": _first_env("YUNXIAO_PRIORITY_FIELD_ID"),
+        "priorityDefaultValue": _first_env("YUNXIAO_PRIORITY_DEFAULT_VALUE"),
+        "participants": _first_env("YUNXIAO_WORKITEM_PARTICIPANTS"),
+        "trackers": _first_env("YUNXIAO_WORKITEM_TRACKERS"),
+        "verifier": _first_env("YUNXIAO_WORKITEM_VERIFIER"),
+        "timeout": _parse_timeout(_first_env("YUNXIAO_OPENAPI_TIMEOUT") or "30"),
+    }
+    required = _env_required(config)
+    _validate_config(config, required)
+    config["timeout"] = max(5, min(int(config["timeout"] or 30), 180))
+    return config
+
+
+def _validate_config(config: dict[str, Any], required: dict[str, Any]) -> None:
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        hint = "Yunxiao OpenAPI uses Alibaba Cloud AK auth; YUNXIAO_TOKEN is not enough for this path"
+        if config.get("authType") == "legacy_token":
+            hint = "Yunxiao legacy token auth is enabled for this account; configure legacy_token or switch auth_type to acs_ak"
+        raise YunxiaoError(f"Yunxiao config missing: {', '.join(missing)}. {hint}")
+
+
+def _db_required(config: dict[str, Any]) -> dict[str, Any]:
+    required = {
+        "adapter_yunxiao_project_config.organization_id": config["organizationId"],
+        "adapter_yunxiao_project_config.project_id": config["projectId"],
+        "adapter_yunxiao_project_config.workitem_type_identifier": config["workitemTypeIdentifier"],
+        "adapter_yunxiao_project_member.default_account_id": config["assignee"],
+    }
+    if config.get("authType") == "legacy_token":
+        required["adapter_yunxiao_account_config.legacy_token"] = config["legacyToken"]
+    else:
+        required["adapter_yunxiao_account_config.access_key_id"] = config["accessKeyId"]
+        required["adapter_yunxiao_account_config.access_key_secret"] = config["accessKeySecret"]
+    return required
+
+
+def _env_required(config: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "ALIBABA_CLOUD_ACCESS_KEY_ID": config["accessKeyId"],
+        "ALIBABA_CLOUD_ACCESS_KEY_SECRET": config["accessKeySecret"],
+        "YUNXIAO_ORGANIZATION_ID": config["organizationId"],
+        "YUNXIAO_PROJECT_ID": config["projectId"],
+        "YUNXIAO_WORKITEM_TYPE_IDENTIFIER": config["workitemTypeIdentifier"],
+        "YUNXIAO_WORKITEM_ASSIGNEE": config["assignee"],
+    }
+
+
+def _resolve_project_name(workflow: dict[str, Any]) -> str | None:
+    context = workflow.get("context") or {}
+    requirement = context.get("requirement") or {}
+    for source in (context, requirement):
+        for key in ("projectName", "project_name", "serviceName", "service_name", "appName", "app_name"):
+            value = _clean_text(source.get(key))
+            if value:
+                return value
+
+    affected_repo = _first_item(requirement.get("affectedRepos"))
+    if affected_repo:
+        return affected_repo
+
+    repo_name = _repo_name(workflow.get("repoUrl") or requirement.get("repoUrl"))
+    if repo_name:
+        return repo_name
+
+    return _first_env("YUNXIAO_DEFAULT_PROJECT_NAME", "YUNXIAO_PROJECT_NAME")
+
+
+def _resolve_db_assignee(project_config: dict[str, Any], workflow_project_name: str | None) -> dict[str, Any]:
+    project_name = _clean_text(project_config.get("projectName")) or _clean_text(workflow_project_name)
+    requested = _resolve_requested_assignee(project_config)
+    if requested:
+        if not project_name:
+            raise YunxiaoError("Yunxiao assignee is specified but projectName is unresolved")
+        member = db.find_yunxiao_project_member(project_name, requested)
+        if not member:
+            raise YunxiaoError(
+                "Yunxiao assignee config missing: "
+                f"projectName={project_name}, assignee={requested}. "
+                "Configure adapter_yunxiao_project_member with member_name or yunxiao_account_id."
+            )
+        return {
+            "name": member.get("name"),
+            "accountId": member.get("accountId"),
+            "source": "project_member_requested",
+        }
+
+    member = db.find_default_yunxiao_project_member(project_name) if project_name else None
+    if member:
+        return {
+            "name": member.get("name"),
+            "accountId": member.get("accountId"),
+            "source": "project_member_default",
+        }
+
+    fallback = _clean_text(project_config.get("assignee"))
+    if fallback:
+        return {
+            "name": None,
+            "accountId": fallback,
+            "source": "project_config_default_assignee",
+        }
+    return {"name": None, "accountId": None, "source": None}
+
+
+def _resolve_requested_assignee(project_config: dict[str, Any]) -> str | None:
+    context = project_config.get("workflowContext")
+    if not isinstance(context, dict):
+        return None
+    requirement = context.get("requirement") if isinstance(context.get("requirement"), dict) else {}
+    for source in (requirement, context):
+        value = _first_present(
+            source,
+            "assigneeId",
+            "assignee_id",
+            "assigneeAccountId",
+            "assignee_account_id",
+            "ownerId",
+            "owner_id",
+            "assigneeName",
+            "assignee_name",
+            "ownerName",
+            "owner_name",
+            "负责人",
+        )
+        if value:
+            return value
+    return None
+
+
+def _normalize_auth_type(value: Any) -> str:
+    normalized = str(value or "acs_ak").strip().lower()
+    if normalized in {"legacy", "token", "yunxiao_token"}:
+        return "legacy_token"
+    if normalized not in {"acs_ak", "legacy_token"}:
+        raise YunxiaoError(f"Unsupported Yunxiao auth_type: {normalized}")
+    return normalized
+
+
+def _signed_headers(config: dict[str, Any], action: str, content_hash: str) -> dict[str, str]:
+    headers = {
+        "host": config["endpoint"],
+        "x-acs-action": action,
+        "x-acs-version": OPENAPI_VERSION,
+        "x-acs-date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "x-acs-signature-nonce": uuid.uuid4().hex,
+        "x-acs-content-sha256": content_hash,
+    }
+    if config.get("securityToken"):
+        headers["x-acs-security-token"] = config["securityToken"]
+    return headers
+
+
+def _authorization_header(
+    *,
+    method: str,
+    path: str,
+    query: str,
+    headers: dict[str, str],
+    content_hash: str,
+    access_key_id: str,
+    access_key_secret: str,
+) -> str:
+    signed_header_names = sorted(headers)
+    canonical_headers = "".join(f"{name}:{_normalize_header_value(headers[name])}\n" for name in signed_header_names)
+    signed_headers = ";".join(signed_header_names)
+    canonical_request = "\n".join(
+        [
+            method,
+            path or "/",
+            query,
+            canonical_headers,
+            signed_headers,
+            content_hash,
+        ]
+    )
+    hashed_request = hashlib.sha256(canonical_request.encode("utf-8")).hexdigest()
+    string_to_sign = f"ACS3-HMAC-SHA256\n{hashed_request}"
+    signature = hmac.new(
+        access_key_secret.encode("utf-8"),
+        string_to_sign.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"ACS3-HMAC-SHA256 Credential={access_key_id},SignedHeaders={signed_headers},Signature={signature}"
+
+
+def _build_description(workflow: dict[str, Any], requirement: dict[str, Any], operator: str | None) -> str:
+    lines = [
+        "来源：钉钉需求文档",
+        f"Workflow：{workflow.get('workflowId') or ''}",
+        f"钉钉链接：{workflow.get('dingtalkUrl') or ''}",
+        f"需求键：{workflow.get('requirementKey') or ''}",
+        f"仓库：{workflow.get('repoUrl') or _join(requirement.get('affectedRepos'))}",
+        f"计划分支：{workflow.get('branchName') or ''}",
+        f"操作人：{operator or ''}",
+        "",
+        "需求摘要：",
+        str(requirement.get("summary") or ""),
+        "",
+        "验收标准：",
+        _format_list(requirement.get("acceptanceCriteria")),
+        "",
+        "接口变更：",
+        _format_api_changes(requirement.get("apiChanges")),
+        "",
+        "测试范围：",
+        _format_list(requirement.get("testScope")),
+        "",
+        f"风险：{requirement.get('risk') or '未提供'}",
+        "",
+        "未决问题：",
+        _format_list(requirement.get("openQuestions")),
+    ]
+    return _clip(_sanitize("\n".join(lines)), 12000)
+
+
+def _format_list(value: Any) -> str:
+    if not isinstance(value, list) or not value:
+        return "- 未提供"
+    return "\n".join(f"- {_clip(_sanitize(str(item)), 500)}" for item in value if item not in (None, ""))
+
+
+def _format_api_changes(value: Any) -> str:
+    if not isinstance(value, list) or not value:
+        return "- 未提供"
+    lines = []
+    for item in value:
+        if isinstance(item, dict):
+            method = str(item.get("method") or "").upper()
+            path = str(item.get("path") or "")
+            description = item.get("description") or item.get("summary") or item.get("name") or ""
+            lines.append(f"- {method} {path} {description}".strip())
+        else:
+            lines.append(f"- {item}")
+    return "\n".join(_clip(_sanitize(line), 500) for line in lines if line)
+
+
+def _extract_workitem_identifier(response: Any) -> str | None:
+    for source in _dict_candidates(response):
+        success = source.get("success")
+        identifier = (
+            source.get("workitemIdentifier")
+            or source.get("identifier")
+            or source.get("workitemId")
+            or source.get("id")
+        )
+        if identifier and (success is None or _is_success(success)):
+            return str(identifier)
+    return None
+
+
+def _response_error(response: Any) -> str:
+    for source in _dict_candidates(response):
+        code = source.get("errorCode") or source.get("code")
+        message = source.get("errorMessage") or source.get("message") or source.get("msg")
+        if code or message:
+            return _clip(_sanitize(f"code={code or ''} message={message or ''}"), 1000)
+    return _clip(_sanitize(str(response)), 1000)
+
+
+def _safe_response(response: Any) -> Any:
+    if isinstance(response, dict):
+        return {
+            key: _safe_response(value)
+            for key, value in response.items()
+            if not _looks_secret_key(key)
+        }
+    if isinstance(response, list):
+        return [_safe_response(item) for item in response]
+    if isinstance(response, str):
+        return _sanitize(response)
+    return response
+
+
+def _parse_json(text: str) -> Any:
+    if not text:
+        return {}
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return text[:1000]
+
+
+def _parse_error_detail(text: str) -> str:
+    parsed = _parse_json(text)
+    if isinstance(parsed, dict):
+        return _response_error(parsed)
+    return _clip(_sanitize(str(parsed)), 1000)
+
+
+def _normalize_endpoint(value: str) -> tuple[str, str]:
+    raw = str(value or DEFAULT_ENDPOINT).strip().rstrip("/")
+    if "://" in raw:
+        parsed = urllib.parse.urlparse(raw)
+        scheme = parsed.scheme or "https"
+        endpoint = parsed.netloc
+    else:
+        scheme = "https"
+        endpoint = raw
+    if not endpoint:
+        raise YunxiaoError("Yunxiao OpenAPI endpoint is invalid")
+    return scheme, endpoint
+
+
+def _http_header_name(value: str) -> str:
+    if value == "host":
+        return "Host"
+    return value
+
+
+def _normalize_header_value(value: str) -> str:
+    return " ".join(str(value or "").strip().split())
+
+
+def _is_success(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() == "true"
+
+
+def _dict_candidates(payload: Any):
+    if not isinstance(payload, dict):
+        return
+    yield payload
+    for key in ("data", "result", "body"):
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            yield nested
+
+
+def _pick(payload: Any, *keys: str, default: Any = None) -> Any:
+    for source in _dict_candidates(payload):
+        for key in keys:
+            value = source.get(key)
+            if value not in (None, ""):
+                return value
+    return default
+
+
+def _first_present(payload: Any, *keys: str) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    for key in keys:
+        value = _clean_text(payload.get(key))
+        if value:
+            return value
+    return None
+
+
+def _first_env(*names: str) -> str | None:
+    for name in names:
+        value = os.getenv(name)
+        if value not in (None, ""):
+            return str(value).strip()
+    return None
+
+
+def _parse_timeout(value: str) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise YunxiaoError("YUNXIAO_OPENAPI_TIMEOUT must be an integer") from exc
+
+
+def _looks_secret_key(value: Any) -> bool:
+    normalized = re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+    return any(keyword.replace("_", "") in normalized for keyword in SECRET_KEYWORDS)
+
+
+def _csv(value: Any) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in str(value).split(",") if item.strip()]
+
+
+def _join(value: Any) -> str:
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value if item not in (None, ""))
+    return str(value or "")
+
+
+def _first_item(value: Any) -> str | None:
+    if isinstance(value, list):
+        for item in value:
+            text = _clean_text(item)
+            if text:
+                return text
+    return _clean_text(value)
+
+
+def _repo_name(value: Any) -> str | None:
+    text = _clean_text(value)
+    if not text:
+        return None
+    parsed = urllib.parse.urlparse(text)
+    path = parsed.path if parsed.scheme or parsed.netloc else text
+    name = path.rstrip("/").split("/")[-1]
+    if name.endswith(".git"):
+        name = name[:-4]
+    return _clean_text(name)
+
+
+def _clean_text(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _sanitize(text: str) -> str:
+    return SECRET_RE.sub(r"\1\2***", str(text or ""))
+
+
+def _clip(text: str, limit: int) -> str:
+    value = str(text or "")
+    return value if len(value) <= limit else value[:limit]

@@ -11,6 +11,7 @@ from app.models import (
     WorkflowRequirementRequest,
     WorkflowStartRequest,
 )
+from app.yunxiao import YunxiaoError, create_yunxiao_workitem
 
 
 class WorkflowError(RuntimeError):
@@ -68,12 +69,7 @@ def advance_workflow(workflow_id: str, request: WorkflowAdvanceRequest) -> dict[
             "nextAction": "POST /workflow/{workflow_id}/requirement",
         }
     if status == "REQUIREMENT_PARSED":
-        return {
-            "workflow": workflow,
-            "advanced": False,
-            "reason": "Yunxiao task creation is not implemented in P0",
-            "nextAction": "manual coding or future Yunxiao adapter",
-        }
+        return _advance_requirement_to_yunxiao_task(workflow, request)
     raise WorkflowError(f"Workflow status cannot advance automatically: {status}")
 
 
@@ -83,6 +79,8 @@ def submit_requirement(workflow_id: str, request: WorkflowRequirementRequest) ->
         raise WorkflowError(f"Workflow status is not DOC_READ: {workflow['status']}")
     requirement = {
         "summary": request.summary,
+        "assigneeId": _clean_text(request.assignee_id),
+        "assigneeName": _clean_text(request.assignee_name),
         "acceptanceCriteria": request.acceptance_criteria,
         "affectedRepos": request.affected_repos,
         "apiChanges": request.api_changes,
@@ -181,6 +179,90 @@ def _advance_created_to_doc_read(workflow: dict[str, Any], request: WorkflowAdva
         "workflow": updated,
         "document": summary,
         "nextAction": "Codex should parse requirement and POST /workflow/{workflow_id}/requirement",
+    }
+
+
+def _advance_requirement_to_yunxiao_task(workflow: dict[str, Any], request: WorkflowAdvanceRequest) -> dict[str, Any]:
+    workflow_id = workflow["workflowId"]
+    if workflow.get("yunxiaoTaskId"):
+        return {
+            "workflow": workflow,
+            "advanced": False,
+            "existing": True,
+            "reason": "Yunxiao workitem already exists",
+            "nextAction": "Codex should start coding and POST /workflow/{workflow_id}/coding-result",
+        }
+
+    try:
+        result = create_yunxiao_workitem(workflow, _clean_text(request.operator))
+    except YunxiaoError as exc:
+        failed = db.record_workflow_error(
+            workflow_id=workflow_id,
+            status="REQUIREMENT_PARSED",
+            error=str(exc),
+            operator=_clean_text(request.operator),
+            event_type="yunxiao_workitem_create_failed",
+            event_payload={"step": "yunxiao_workitem_create"},
+        )
+        raise WorkflowError(f"Yunxiao workitem creation failed: {failed['lastError']}") from exc
+
+    context = _merge_context(
+        workflow,
+        {
+            "yunxiao": {
+                "createResult": {
+                    "workitemIdentifier": result["workitemIdentifier"],
+                    "requestId": result.get("requestId"),
+                    "projectName": result.get("projectName"),
+                    "projectId": result.get("projectId"),
+                    "category": result.get("category"),
+                    "workitemTypeIdentifier": result.get("workitemTypeIdentifier"),
+                    "assignee": result.get("assignee"),
+                    "title": result.get("title"),
+                    "configSource": result.get("configSource"),
+                }
+            }
+        },
+    )
+    created = db.update_workflow_yunxiao_task_created(
+        workflow_id=workflow_id,
+        from_status="REQUIREMENT_PARSED",
+        yunxiao_task_id=result["workitemIdentifier"],
+        context=context,
+        operator=_clean_text(request.operator),
+        event_payload={
+            "yunxiaoTaskId": result["workitemIdentifier"],
+            "projectName": result.get("projectName"),
+            "projectId": result.get("projectId"),
+            "assignee": result.get("assignee"),
+            "title": result.get("title"),
+        },
+    )
+    coding_context = _merge_context(
+        created,
+        {
+            "codingRequest": {
+                "source": "yunxiao_workitem_created",
+                "yunxiaoTaskId": result["workitemIdentifier"],
+                "assignee": result.get("assignee"),
+            }
+        },
+    )
+    updated = db.update_workflow_coding_requested(
+        workflow_id=workflow_id,
+        context=coding_context,
+        operator=_clean_text(request.operator),
+        event_payload={"yunxiaoTaskId": result["workitemIdentifier"]},
+    )
+    return {
+        "workflow": updated,
+        "advanced": True,
+        "yunxiao": {
+            "workitemIdentifier": result["workitemIdentifier"],
+            "projectName": result.get("projectName"),
+            "projectId": result.get("projectId"),
+        },
+        "nextAction": "Codex should start coding and POST /workflow/{workflow_id}/coding-result",
     }
 
 
