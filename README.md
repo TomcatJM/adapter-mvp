@@ -327,13 +327,13 @@ sql/mysql_schema.sql
 主交接文档：
 
 ```text
-docs/adapter-mvp-handoff.md
+docs/交付与接口留存文档.md
 ```
 
 API 交接文档：
 
 ```text
-docs/adapter-api.md
+docs/接口文档.md
 ```
 
 
@@ -341,7 +341,7 @@ docs/adapter-api.md
 云效 execute 审批链路详细配置见主交接文档：
 
 ```text
-docs/adapter-mvp-handoff.md#13-云效-execute-审批链路配置
+docs/交付与接口留存文档.md#13-云效-execute-审批链路配置
 ```
 
 推荐节点顺序：
