@@ -175,6 +175,58 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
         self.assertEqual(captured["payload"]["spaceIdentifier"], "project-legacy")
         self.assertEqual(captured["payload"]["sprint"], "sprint-legacy")
 
+    def test_create_workitem_uses_personal_token_api(self) -> None:
+        from app.yunxiao import create_yunxiao_workitem
+
+        workflow = _workflow()
+        captured = {}
+
+        def fake_request(**kwargs):
+            captured.update(kwargs)
+            return {"success": True, "identifier": "YX-PAT-1"}
+
+        with patch.dict(os.environ, {}, clear=True), patch("app.yunxiao.db.configured", return_value=True), patch(
+            "app.yunxiao.db.find_yunxiao_project_config",
+            return_value={
+                "projectName": "jdb-school-crm",
+                "accountName": "pat-main",
+                "organizationId": "org-pat",
+                "projectId": "project-pat",
+                "category": "Req",
+                "workitemTypeIdentifier": "type-pat",
+                "assignee": "account-pat",
+            },
+        ), patch(
+            "app.yunxiao.db.find_yunxiao_project_member", return_value=None
+        ), patch(
+            "app.yunxiao.db.find_default_yunxiao_project_member", return_value=None
+        ), patch(
+            "app.yunxiao.db.find_yunxiao_account_config",
+            return_value={
+                "accountName": "pat-main",
+                "authType": "personal_token",
+                "legacyToken": "pat-secret",
+                "endpoint": "https://devops.cn-hangzhou.aliyuncs.com",
+            },
+        ), patch(
+            "app.yunxiao._request_yunxiao_personal_token_rest", side_effect=fake_request
+        ) as pat_request, patch(
+            "app.yunxiao._request_yunxiao_openapi"
+        ) as acs_request:
+            result = create_yunxiao_workitem(workflow, "codex")
+
+        pat_request.assert_called_once()
+        acs_request.assert_not_called()
+        self.assertEqual(result["workitemIdentifier"], "YX-PAT-1")
+        self.assertEqual(result["authType"], "personal_token")
+        self.assertEqual(captured["method"], "POST")
+        self.assertEqual(captured["path"], "/oapi/v1/projex/organizations/org-pat/workitems")
+        self.assertEqual(captured["payload"]["spaceId"], "project-pat")
+        self.assertEqual(captured["payload"]["workitemTypeId"], "type-pat")
+        self.assertNotIn("spaceIdentifier", captured["payload"])
+        self.assertNotIn("workitemTypeIdentifier", captured["payload"])
+        self.assertEqual(captured["config"]["personalToken"], "pat-secret")
+
     def test_create_workitem_uses_default_project_member_before_legacy_default_assignee(self) -> None:
         from app.yunxiao import create_yunxiao_workitem
 

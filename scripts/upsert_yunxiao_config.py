@@ -20,6 +20,10 @@ Legacy CLI token configs can be imported explicitly:
     --legacy-config /root/.openclaw/yunxiao-task-config.json \
     --project-name jdb-school-crm --project-id space-id --default-assignee user-id
 
+Yunxiao personal access tokens can use the same token storage field:
+  YUNXIAO_PERSONAL_TOKEN=xxx python scripts/upsert_yunxiao_config.py \
+    --auth-type personal_token --project-name jdb-school-crm ...
+
 Project members can also be maintained without touching account/project config:
   python scripts/upsert_yunxiao_config.py --member-only \
     --project-name jdb-school-crm \
@@ -46,12 +50,16 @@ sys.path.insert(0, str(ROOT))
 from app import db  # noqa: E402
 
 
+DEFAULT_ENDPOINT = "devops.cn-hangzhou.aliyuncs.com"
+PERSONAL_TOKEN_ENDPOINT = "openapi-rdc.aliyuncs.com"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--account-name", default=os.getenv("YUNXIAO_ACCOUNT_NAME") or "default")
     parser.add_argument(
         "--auth-type",
-        choices=("acs_ak", "legacy_token"),
+        choices=("acs_ak", "legacy_token", "personal_token"),
         default=os.getenv("YUNXIAO_AUTH_TYPE") or "acs_ak",
     )
     parser.add_argument("--access-key-id", default=os.getenv("ALIBABA_CLOUD_ACCESS_KEY_ID") or os.getenv("ALIYUN_ACCESS_KEY_ID"))
@@ -59,10 +67,15 @@ def main() -> None:
         "--access-key-secret",
         default=os.getenv("ALIBABA_CLOUD_ACCESS_KEY_SECRET") or os.getenv("ALIYUN_ACCESS_KEY_SECRET"),
     )
-    parser.add_argument("--legacy-token", default=os.getenv("YUNXIAO_TOKEN") or os.getenv("YUNXIAO_LEGACY_TOKEN"))
+    parser.add_argument(
+        "--legacy-token",
+        default=os.getenv("YUNXIAO_TOKEN")
+        or os.getenv("YUNXIAO_LEGACY_TOKEN")
+        or os.getenv("YUNXIAO_PERSONAL_TOKEN"),
+    )
     parser.add_argument("--legacy-config", help="旧CLI配置JSON，例如 /root/.openclaw/yunxiao-task-config.json")
     parser.add_argument("--security-token", default=os.getenv("ALIBABA_CLOUD_SECURITY_TOKEN") or os.getenv("ALIYUN_SECURITY_TOKEN"))
-    parser.add_argument("--endpoint", default=os.getenv("YUNXIAO_OPENAPI_ENDPOINT") or "devops.cn-hangzhou.aliyuncs.com")
+    parser.add_argument("--endpoint", default=os.getenv("YUNXIAO_OPENAPI_ENDPOINT"))
     parser.add_argument("--project-name", required=True, help="业务项目名称，例如 jdb-school-crm")
     parser.add_argument("--organization-id", help="云效企业/组织 ID")
     parser.add_argument("--project-id", help="云效项目 ID 或 spaceIdentifier")
@@ -120,6 +133,8 @@ def main() -> None:
         help="只维护 adapter_yunxiao_project_member，不修改账号或项目映射",
     )
     args = parser.parse_args()
+    if not args.endpoint:
+        args.endpoint = PERSONAL_TOKEN_ENDPOINT if args.auth_type == "personal_token" else DEFAULT_ENDPOINT
 
     legacy_config = _read_legacy_config(args.legacy_config)
     if legacy_config:
@@ -144,6 +159,8 @@ def main() -> None:
         )
     if not args.member_only and not args.skip_account and args.auth_type == "legacy_token" and not args.legacy_token:
         raise SystemExit("Yunxiao legacy token is missing; set YUNXIAO_TOKEN, --legacy-token, or --legacy-config")
+    if not args.member_only and not args.skip_account and args.auth_type == "personal_token" and not args.legacy_token:
+        raise SystemExit("Yunxiao personal token is missing; set YUNXIAO_PERSONAL_TOKEN, YUNXIAO_TOKEN, or --legacy-token")
     if not args.member_only and not args.organization_id:
         raise SystemExit("Yunxiao organization id is missing; set --organization-id or --legacy-config")
     if not args.member_only and not args.workitem_type_identifier:
@@ -188,7 +205,7 @@ def main() -> None:
                         args.auth_type,
                         args.access_key_id if args.auth_type == "acs_ak" else None,
                         args.access_key_secret if args.auth_type == "acs_ak" else None,
-                        args.legacy_token if args.auth_type == "legacy_token" else None,
+                        args.legacy_token if args.auth_type in {"legacy_token", "personal_token"} else None,
                         args.security_token or None,
                         args.endpoint,
                         args.remark or None,

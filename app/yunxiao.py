@@ -16,6 +16,7 @@ from app import db
 
 
 DEFAULT_ENDPOINT = "devops.cn-hangzhou.aliyuncs.com"
+PERSONAL_TOKEN_ENDPOINT = "openapi-rdc.aliyuncs.com"
 OPENAPI_VERSION = "2021-06-25"
 CREATE_WORKITEM_ACTION = "CreateWorkitemV2"
 GET_WORKITEM_ACTION = "GetWorkItemInfo"
@@ -38,6 +39,14 @@ def create_yunxiao_workitem(workflow: dict[str, Any], operator: str | None = Non
     payload = build_create_workitem_payload(workflow, config, operator)
     if config.get("authType") == "legacy_token":
         response = _request_yunxiao_legacy_openapi(payload=payload, config=config, timeout=config["timeout"])
+    elif config.get("authType") == "personal_token":
+        response = _request_yunxiao_personal_token_rest(
+            method="POST",
+            path=_personal_token_workitem_path(config),
+            payload=_personal_token_workitem_payload(payload, config),
+            config=config,
+            timeout=config["timeout"],
+        )
     else:
         organization_id = urllib.parse.quote(config["organizationId"], safe="")
         response = _request_yunxiao_openapi(
@@ -136,6 +145,14 @@ def get_yunxiao_workitem(workitem_id: str, config: dict[str, Any]) -> Any:
             config=config,
             timeout=config["timeout"],
         )
+    elif config.get("authType") == "personal_token":
+        response = _request_yunxiao_personal_token_rest(
+            method="GET",
+            path=_personal_token_workitem_path(config, escaped_workitem_id),
+            payload=None,
+            config=config,
+            timeout=config["timeout"],
+        )
     else:
         response = _request_yunxiao_openapi(
             method="GET",
@@ -165,6 +182,14 @@ def add_yunxiao_workitem_comment(workitem_id: str, content: str, config: dict[st
             config=config,
             timeout=config["timeout"],
         )
+    elif config.get("authType") == "personal_token":
+        response = _request_yunxiao_personal_token_rest(
+            method="POST",
+            path=_personal_token_workitem_path(config, urllib.parse.quote(workitem_id, safe=""), suffix="/comments"),
+            payload={"content": payload["content"]},
+            config=config,
+            timeout=config["timeout"],
+        )
     else:
         response = _request_yunxiao_openapi(
             method="POST",
@@ -180,6 +205,22 @@ def add_yunxiao_workitem_comment(workitem_id: str, content: str, config: dict[st
 
 def update_yunxiao_workitem_done_status(workitem_id: str, config: dict[str, Any]) -> Any:
     organization_id = urllib.parse.quote(config["organizationId"], safe="")
+    if config.get("authType") == "personal_token":
+        if not config.get("doneStatusId"):
+            raise YunxiaoError(
+                "Yunxiao personal_token close config missing: done_status_id. "
+                "UpdateWorkitem with personal token closes by status id, not close_transition_id."
+            )
+        response = _request_yunxiao_personal_token_rest(
+            method="PUT",
+            path=_personal_token_workitem_path(config, urllib.parse.quote(workitem_id, safe="")),
+            payload={"status": config["doneStatusId"]},
+            config=config,
+            timeout=config["timeout"],
+        )
+        _require_api_success(response, "Yunxiao close workitem")
+        return response
+
     if config.get("closeTransitionId"):
         path = f"/organization/{organization_id}/workitems/update"
         payload = {
@@ -393,6 +434,38 @@ def _request_yunxiao_legacy_rest(
         raise YunxiaoError(f"Yunxiao legacy API network error: {_sanitize(str(exc))[:1000]}") from exc
 
 
+def _request_yunxiao_personal_token_rest(
+    *,
+    method: str,
+    path: str,
+    payload: dict[str, Any] | None,
+    config: dict[str, Any],
+    timeout: int,
+) -> Any:
+    body = None
+    if payload is not None:
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    request = urllib.request.Request(
+        f"{config['scheme']}://{config['endpoint']}{path}",
+        data=body,
+        method=method.upper(),
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json; charset=utf-8",
+            "x-yunxiao-token": config["personalToken"],
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            text = response.read().decode("utf-8", errors="replace")
+            return _parse_json(text)
+    except urllib.error.HTTPError as exc:
+        body_text = exc.read().decode("utf-8", errors="replace")
+        raise YunxiaoError(f"Yunxiao personal token API failed: status={exc.code} {_parse_error_detail(body_text)}") from exc
+    except urllib.error.URLError as exc:
+        raise YunxiaoError(f"Yunxiao personal token API network error: {_sanitize(str(exc))[:1000]}") from exc
+
+
 def _legacy_workitem_payload(payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
     legacy_payload = {
         "organizationId": config["organizationId"],
@@ -406,6 +479,33 @@ def _legacy_workitem_payload(payload: dict[str, Any], config: dict[str, Any]) ->
     if payload.get("sprint"):
         legacy_payload["sprint"] = payload["sprint"]
     return legacy_payload
+
+
+def _personal_token_workitem_payload(payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    personal_payload: dict[str, Any] = {
+        "spaceId": config["projectId"],
+        "category": config["category"],
+        "workitemTypeId": config["workitemTypeIdentifier"],
+        "subject": payload["subject"],
+        "description": payload["description"],
+        "assignedTo": payload["assignedTo"],
+    }
+    if payload.get("fieldValueList"):
+        personal_payload["fieldValueList"] = payload["fieldValueList"]
+    for key in ("participants", "trackers", "verifier", "sprint"):
+        if payload.get(key):
+            personal_payload[key] = payload[key]
+    return personal_payload
+
+
+def _personal_token_workitem_path(config: dict[str, Any], workitem_id: str | None = None, suffix: str = "") -> str:
+    organization_id = urllib.parse.quote(config["organizationId"], safe="")
+    path = f"/oapi/v1/projex/organizations/{organization_id}/workitems"
+    if workitem_id:
+        path += f"/{workitem_id}"
+    if suffix:
+        path += suffix
+    return path
 
 
 def _load_config(workflow: dict[str, Any], *, purpose: str = "create") -> dict[str, Any]:
@@ -445,8 +545,8 @@ def _load_db_config(project_name: str | None, workflow: dict[str, Any], *, purpo
             f"accountName={account_name}. Configure adapter_yunxiao_account_config."
         )
 
-    scheme, endpoint = _normalize_endpoint(account_config.get("endpoint") or DEFAULT_ENDPOINT)
     auth_type = _normalize_auth_type(account_config.get("authType"))
+    scheme, endpoint = _normalize_endpoint(account_config.get("endpoint") or _default_endpoint(auth_type))
     assignee = {"name": None, "accountId": project_config.get("assignee"), "source": "not_required"}
     if purpose == "create":
         assignee = _resolve_db_assignee(
@@ -466,6 +566,7 @@ def _load_db_config(project_name: str | None, workflow: dict[str, Any], *, purpo
         "accessKeyId": account_config.get("accessKeyId"),
         "accessKeySecret": account_config.get("accessKeySecret"),
         "legacyToken": account_config.get("legacyToken"),
+        "personalToken": account_config.get("legacyToken"),
         "securityToken": account_config.get("securityToken"),
         "organizationId": project_config.get("organizationId"),
         "projectId": project_config.get("projectId"),
@@ -541,6 +642,8 @@ def _validate_config(config: dict[str, Any], required: dict[str, Any]) -> None:
         hint = "Yunxiao OpenAPI uses Alibaba Cloud AK auth; YUNXIAO_TOKEN is not enough for this path"
         if config.get("authType") == "legacy_token":
             hint = "Yunxiao legacy token auth is enabled for this account; configure legacy_token or switch auth_type to acs_ak"
+        elif config.get("authType") == "personal_token":
+            hint = "Yunxiao personal token auth is enabled; configure legacy_token with a Yunxiao personal access token"
         raise YunxiaoError(f"Yunxiao config missing: {', '.join(missing)}. {hint}")
 
 
@@ -554,6 +657,8 @@ def _db_required(config: dict[str, Any], purpose: str) -> dict[str, Any]:
         required["adapter_yunxiao_project_member.default_account_id"] = config["assignee"]
     if config.get("authType") == "legacy_token":
         required["adapter_yunxiao_account_config.legacy_token"] = config["legacyToken"]
+    elif config.get("authType") == "personal_token":
+        required["adapter_yunxiao_account_config.legacy_token"] = config["personalToken"]
     else:
         required["adapter_yunxiao_account_config.access_key_id"] = config["accessKeyId"]
         required["adapter_yunxiao_account_config.access_key_secret"] = config["accessKeySecret"]
@@ -669,9 +774,17 @@ def _normalize_auth_type(value: Any) -> str:
     normalized = str(value or "acs_ak").strip().lower()
     if normalized in {"legacy", "token", "yunxiao_token"}:
         return "legacy_token"
-    if normalized not in {"acs_ak", "legacy_token"}:
+    if normalized in {"personal", "personal_access_token", "pat"}:
+        return "personal_token"
+    if normalized not in {"acs_ak", "legacy_token", "personal_token"}:
         raise YunxiaoError(f"Unsupported Yunxiao auth_type: {normalized}")
     return normalized
+
+
+def _default_endpoint(auth_type: str) -> str:
+    if auth_type == "personal_token":
+        return PERSONAL_TOKEN_ENDPOINT
+    return DEFAULT_ENDPOINT
 
 
 def _signed_headers(config: dict[str, Any], action: str, content_hash: str) -> dict[str, str]:

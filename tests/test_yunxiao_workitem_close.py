@@ -145,6 +145,59 @@ class YunxiaoWorkitemCloseTest(unittest.TestCase):
         self.assertIn("legacy_token", str(raised.exception))
         self.assertIn("access_key_id", str(raised.exception))
 
+    def test_close_workitem_uses_personal_token_api(self) -> None:
+        from app.yunxiao import close_yunxiao_workitem
+
+        captured: list[dict] = []
+
+        def fake_request(**kwargs):
+            captured.append(kwargs)
+            if kwargs["method"] == "GET" and len([item for item in captured if item["method"] == "GET"]) == 1:
+                return {"success": True, "identifier": "YX-1", "status": "doing"}
+            if kwargs["method"] == "GET":
+                return {"success": True, "identifier": "YX-1", "status": "done"}
+            return {"success": True}
+
+        project_config = {
+            "projectName": "jdb-school-crm",
+            "accountName": "pat-main",
+            "organizationId": "org-1",
+            "projectId": "project-1",
+            "category": "Req",
+            "workitemTypeIdentifier": "type-1",
+            "assignee": "user-1",
+            "doneStatusId": "done",
+            "doneStatusFieldId": "status",
+            "doneStatusNames": "已完成,done",
+            "commentFormatType": "MARKDOWN",
+        }
+        account_config = {
+            "accountName": "pat-main",
+            "authType": "personal_token",
+            "legacyToken": "pat-secret",
+            "endpoint": "devops.cn-hangzhou.aliyuncs.com",
+        }
+
+        with patch("app.yunxiao.db.configured", return_value=True), patch(
+            "app.yunxiao.db.find_yunxiao_project_config", return_value=project_config
+        ), patch("app.yunxiao.db.find_yunxiao_account_config", return_value=account_config), patch(
+            "app.yunxiao._request_yunxiao_personal_token_rest", side_effect=fake_request
+        ) as pat_request, patch(
+            "app.yunxiao._request_yunxiao_openapi"
+        ) as acs_request:
+            result = close_yunxiao_workitem(_workflow(), "codex")
+
+        self.assertEqual(result["authType"], "personal_token")
+        self.assertEqual(result["writeback"], "success")
+        self.assertEqual(result["closedStatus"], "done")
+        self.assertEqual([item["method"] for item in captured], ["GET", "POST", "PUT", "GET"])
+        self.assertEqual(captured[0]["path"], "/oapi/v1/projex/organizations/org-1/workitems/YX-1")
+        self.assertEqual(captured[1]["path"], "/oapi/v1/projex/organizations/org-1/workitems/YX-1/comments")
+        self.assertIn("【Adapter 交付回写】", captured[1]["payload"]["content"])
+        self.assertEqual(captured[2]["payload"], {"status": "done"})
+        pat_request.assert_called()
+        acs_request.assert_not_called()
+
     def test_advance_apifox_synced_closes_workitem(self) -> None:
         from app.models import WorkflowAdvanceRequest
         from app.workflow import advance_workflow
