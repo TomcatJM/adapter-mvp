@@ -48,6 +48,7 @@ def create_yunxiao_workitem(workflow: dict[str, Any], operator: str | None = Non
             config=config,
             timeout=config["timeout"],
         )
+    _require_api_success(response, "Yunxiao create workitem")
     workitem_id = _extract_workitem_identifier(response)
     if not workitem_id:
         raise YunxiaoError(f"Yunxiao create workitem failed: {_response_error(response)}")
@@ -780,8 +781,11 @@ def _extract_workitem_identifier(response: Any) -> str | None:
             or source.get("workitemId")
             or source.get("id")
         )
-        if identifier and (success is None or _is_success(success)):
-            return str(identifier)
+        if isinstance(identifier, (dict, list)):
+            continue
+        text = _clean_text(identifier)
+        if text and (success is None or _is_success(success)):
+            return text
     return None
 
 
@@ -861,6 +865,10 @@ def _api_success(response: Any) -> bool:
         code = source.get("errorCode") or source.get("errorCodeStr")
         if code:
             return False
+        if source.get("error") or source.get("message") or source.get("errorMessage"):
+            status = source.get("status") or source.get("statusCode")
+            if str(status).isdigit() and int(status) >= 400:
+                return False
         if str(source.get("code") or "").lower() in {"error", "failed", "false"}:
             return False
     return True
@@ -868,7 +876,7 @@ def _api_success(response: Any) -> bool:
 
 def _response_error(response: Any) -> str:
     for source in _dict_candidates(response):
-        code = source.get("errorCode") or source.get("code")
+        code = source.get("errorCode") or source.get("code") or source.get("error")
         message = source.get("errorMessage") or source.get("message") or source.get("msg")
         if code or message:
             return _clip(_sanitize(f"code={code or ''} message={message or ''}"), 1000)
@@ -939,7 +947,7 @@ def _dict_candidates(payload: Any):
     if not isinstance(payload, dict):
         return
     yield payload
-    for key in ("data", "result", "body"):
+    for key in ("data", "result", "body", "workitemIdentifier", "identifier", "workitemId", "id"):
         nested = payload.get(key)
         if isinstance(nested, dict):
             yield nested

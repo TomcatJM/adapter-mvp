@@ -50,6 +50,28 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
         self.assertIn("POST /crm/client/follow-record", payload["description"])
         self.assertNotIn("secret-value", payload["description"])
 
+    def test_create_workitem_error_response_is_not_treated_as_identifier(self) -> None:
+        from app.yunxiao import YunxiaoError, create_yunxiao_workitem
+
+        response = {
+            "workitemIdentifier": {
+                "path": "/open/api/cloud/v1/workitem/createV2",
+                "error": "Internal Server Error",
+                "message": "Openapi.Unauthorized.Failed",
+                "status": 500,
+            },
+            "errorMessage": "",
+        }
+
+        with patch.dict(os.environ, ENV, clear=True), patch(
+            "app.yunxiao._request_yunxiao_openapi", return_value=response
+        ):
+            with self.assertRaises(YunxiaoError) as raised:
+                create_yunxiao_workitem(_workflow(), "codex")
+
+        self.assertIn("Yunxiao create workitem failed", str(raised.exception))
+        self.assertIn("Openapi.Unauthorized.Failed", str(raised.exception))
+
     def test_create_workitem_uses_db_project_and_account_config_before_env(self) -> None:
         from app.yunxiao import create_yunxiao_workitem
 
