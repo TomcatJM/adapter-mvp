@@ -152,6 +152,12 @@ def ensure_schema() -> None:
                         participants TEXT NULL COMMENT '参与人，逗号分隔',
                         trackers TEXT NULL COMMENT '关注人，逗号分隔',
                         verifier VARCHAR(128) NULL COMMENT '验证人云效账号ID',
+                        done_status_id VARCHAR(128) NULL COMMENT '云效完成状态ID，用于关单',
+                        done_status_field_id VARCHAR(128) NULL COMMENT '云效状态字段ID，默认status',
+                        done_status_names VARCHAR(512) NULL COMMENT '已完成状态名称，逗号分隔，用于幂等判断',
+                        comment_field_key VARCHAR(128) NULL COMMENT '回写字段Key，保留扩展',
+                        comment_format_type VARCHAR(32) NULL COMMENT '评论格式，默认MARKDOWN',
+                        close_transition_id VARCHAR(128) NULL COMMENT '云效关闭流转ID，优先于done_status_id',
                         remark VARCHAR(512) NULL COMMENT '备注',
                         created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
                         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -357,6 +363,12 @@ def _ensure_comments(cursor) -> None:
         "ALTER TABLE adapter_yunxiao_account_config ADD COLUMN legacy_token TEXT NULL COMMENT '旧云效Token，legacy_token必填' AFTER access_key_secret",
         "ALTER TABLE adapter_yunxiao_project_config COMMENT='Adapter云效项目映射配置表'",
         "ALTER TABLE adapter_yunxiao_project_config ADD COLUMN sprint_id VARCHAR(128) NULL COMMENT '云效迭代ID，旧接口可选' AFTER project_id",
+        "ALTER TABLE adapter_yunxiao_project_config ADD COLUMN done_status_id VARCHAR(128) NULL COMMENT '云效完成状态ID，用于关单' AFTER verifier",
+        "ALTER TABLE adapter_yunxiao_project_config ADD COLUMN done_status_field_id VARCHAR(128) NULL COMMENT '云效状态字段ID，默认status' AFTER done_status_id",
+        "ALTER TABLE adapter_yunxiao_project_config ADD COLUMN done_status_names VARCHAR(512) NULL COMMENT '已完成状态名称，逗号分隔，用于幂等判断' AFTER done_status_field_id",
+        "ALTER TABLE adapter_yunxiao_project_config ADD COLUMN comment_field_key VARCHAR(128) NULL COMMENT '回写字段Key，保留扩展' AFTER done_status_names",
+        "ALTER TABLE adapter_yunxiao_project_config ADD COLUMN comment_format_type VARCHAR(32) NULL COMMENT '评论格式，默认MARKDOWN' AFTER comment_field_key",
+        "ALTER TABLE adapter_yunxiao_project_config ADD COLUMN close_transition_id VARCHAR(128) NULL COMMENT '云效关闭流转ID，优先于done_status_id' AFTER comment_format_type",
         "ALTER TABLE adapter_yunxiao_project_member COMMENT='Adapter云效项目人员配置表'",
         "ALTER TABLE adapter_dingtalk_app_config COMMENT='Adapter钉钉文档读取旧版混合配置表'",
         "ALTER TABLE adapter_dingtalk_app_config ADD COLUMN operator_id VARCHAR(128) NULL COMMENT '钉钉文档操作人userId' AFTER token_header_name",
@@ -789,6 +801,28 @@ def update_workflow_apifox_synced(
     )
 
 
+def update_workflow_yunxiao_task_closed(
+    *,
+    workflow_id: str,
+    context: dict[str, Any],
+    operator: str | None,
+    event_payload: dict[str, Any],
+    event_type: str = "yunxiao_workitem_closed",
+    message: str = "Yunxiao workitem closed",
+) -> dict[str, Any]:
+    return _update_workflow_state(
+        workflow_id=workflow_id,
+        expected_status="APIFOX_SYNCED",
+        to_status="YUNXIAO_TASK_CLOSED",
+        context=context,
+        operator=operator,
+        event_type=event_type,
+        message=message,
+        event_payload=event_payload,
+        clear_error=True,
+    )
+
+
 def record_workflow_apifox_result(
     *,
     workflow_id: str,
@@ -825,6 +859,90 @@ def record_workflow_apifox_result(
                 operator=operator,
                 message=clipped_message,
                 payload=event_payload,
+            )
+    workflow = find_workflow_instance(workflow_id)
+    if not workflow:
+        raise ValueError(f"Workflow not found: {workflow_id}")
+    return workflow
+
+
+def mark_workflow_needs_human(
+    *,
+    workflow_id: str,
+    from_status: str,
+    error: str,
+    operator: str | None,
+    event_type: str,
+    event_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    _require_configured()
+    ensure_schema()
+    clipped_error = str(error or "")[:2048]
+    with connect() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE adapter_workflow_instance
+                SET status = 'NEEDS_HUMAN',
+                    last_error = %s,
+                    retry_count = retry_count + 1
+                WHERE workflow_id = %s
+                  AND status = %s
+                """,
+                (clipped_error, workflow_id, from_status),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError(f"Workflow status changed before NEEDS_HUMAN mark: {workflow_id}")
+            _insert_workflow_event(
+                cursor,
+                workflow_id=workflow_id,
+                event_type=event_type,
+                from_status=from_status,
+                to_status="NEEDS_HUMAN",
+                operator=operator,
+                message=clipped_error[:1024],
+                payload=event_payload or {},
+            )
+    workflow = find_workflow_instance(workflow_id)
+    if not workflow:
+        raise ValueError(f"Workflow not found: {workflow_id}")
+    return workflow
+
+
+def resolve_workflow_needs_human(
+    *,
+    workflow_id: str,
+    target_status: str,
+    operator: str | None,
+    reason: str | None,
+    event_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    _require_configured()
+    ensure_schema()
+    clipped_reason = str(reason or "Workflow manually resolved")[:1024]
+    with connect() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE adapter_workflow_instance
+                SET status = %s,
+                    last_error = NULL
+                WHERE workflow_id = %s
+                  AND status = 'NEEDS_HUMAN'
+                """,
+                (target_status, workflow_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError(f"Workflow status is not NEEDS_HUMAN: {workflow_id}")
+            _insert_workflow_event(
+                cursor,
+                workflow_id=workflow_id,
+                event_type="workflow_resolved",
+                from_status="NEEDS_HUMAN",
+                to_status=target_status,
+                operator=operator,
+                message=clipped_reason,
+                payload=event_payload or {},
             )
     workflow = find_workflow_instance(workflow_id)
     if not workflow:
@@ -1036,6 +1154,12 @@ def find_yunxiao_project_config(project_name: str) -> dict[str, Any] | None:
                         participants,
                         trackers,
                         verifier,
+                        done_status_id,
+                        done_status_field_id,
+                        done_status_names,
+                        comment_field_key,
+                        comment_format_type,
+                        close_transition_id,
                         remark
                     FROM adapter_yunxiao_project_config
                     WHERE LOWER(project_name) = LOWER(%s)
@@ -1060,6 +1184,12 @@ def find_yunxiao_project_config(project_name: str) -> dict[str, Any] | None:
             "participants": row.get("participants"),
             "trackers": row.get("trackers"),
             "verifier": row.get("verifier"),
+            "doneStatusId": row.get("done_status_id"),
+            "doneStatusFieldId": row.get("done_status_field_id"),
+            "doneStatusNames": row.get("done_status_names"),
+            "commentFieldKey": row.get("comment_field_key"),
+            "commentFormatType": row.get("comment_format_type"),
+            "closeTransitionId": row.get("close_transition_id"),
             "remark": row.get("remark"),
         }
     except Exception:

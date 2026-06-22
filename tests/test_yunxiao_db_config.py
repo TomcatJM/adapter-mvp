@@ -40,6 +40,12 @@ class YunxiaoDbConfigTest(unittest.TestCase):
             "participants": "u2,u3",
             "trackers": "u4",
             "verifier": "u5",
+            "done_status_id": "done",
+            "done_status_field_id": "status",
+            "done_status_names": "已完成,已关闭",
+            "comment_field_key": "description",
+            "comment_format_type": "MARKDOWN",
+            "close_transition_id": "transition-done",
             "remark": "crm project",
         }
 
@@ -57,6 +63,12 @@ class YunxiaoDbConfigTest(unittest.TestCase):
         self.assertEqual(result["sprintId"], "sprint-1")
         self.assertEqual(result["workitemTypeIdentifier"], "type-req")
         self.assertEqual(result["assignee"], "user-1")
+        self.assertEqual(result["doneStatusId"], "done")
+        self.assertEqual(result["doneStatusFieldId"], "status")
+        self.assertEqual(result["doneStatusNames"], "已完成,已关闭")
+        self.assertEqual(result["commentFieldKey"], "description")
+        self.assertEqual(result["commentFormatType"], "MARKDOWN")
+        self.assertEqual(result["closeTransitionId"], "transition-done")
         sql = cursor.execute.call_args.args[0]
         self.assertIn("adapter_yunxiao_project_config", sql)
         self.assertIn("LOWER(project_name)", sql)

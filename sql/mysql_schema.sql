@@ -82,6 +82,12 @@ CREATE TABLE IF NOT EXISTS adapter_yunxiao_project_config (
     participants TEXT NULL COMMENT '参与人，逗号分隔',
     trackers TEXT NULL COMMENT '关注人，逗号分隔',
     verifier VARCHAR(128) NULL COMMENT '验证人云效账号ID',
+    done_status_id VARCHAR(128) NULL COMMENT '云效完成状态ID，用于关单',
+    done_status_field_id VARCHAR(128) NULL COMMENT '云效状态字段ID，默认status',
+    done_status_names VARCHAR(512) NULL COMMENT '已完成状态名称，逗号分隔，用于幂等判断',
+    comment_field_key VARCHAR(128) NULL COMMENT '回写字段Key，保留扩展',
+    comment_format_type VARCHAR(32) NULL COMMENT '评论格式，默认MARKDOWN',
+    close_transition_id VARCHAR(128) NULL COMMENT '云效关闭流转ID，优先于done_status_id',
     remark VARCHAR(512) NULL COMMENT '备注',
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP

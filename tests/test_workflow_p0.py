@@ -172,6 +172,48 @@ class WorkflowP0Test(unittest.TestCase):
         self.assertEqual(result["workflow"]["commitId"], "abc123")
         self.assertEqual(result["workflow"]["context"]["codingResult"]["tests"], ["unit ok"])
 
+    def test_resolve_needs_human_to_apifox_synced(self) -> None:
+        from app.models import WorkflowResolveRequest
+        from app.workflow import resolve_workflow
+
+        workflow = {"workflowId": "wf-test-1", "status": "NEEDS_HUMAN", "context": {}, "lastError": "close failed"}
+        captured = {}
+
+        def fake_resolve(**kwargs):
+            captured.update(kwargs)
+            return {**workflow, "status": kwargs["target_status"], "lastError": None}
+
+        with patch("app.workflow.db.find_workflow_instance", return_value=workflow), patch(
+            "app.workflow.db.resolve_workflow_needs_human", side_effect=fake_resolve
+        ):
+            result = resolve_workflow(
+                "wf-test-1",
+                WorkflowResolveRequest(operator="codex", targetStatus="APIFOX_SYNCED", reason="AK configured"),
+            )
+
+        self.assertTrue(result["resolved"])
+        self.assertEqual(result["workflow"]["status"], "APIFOX_SYNCED")
+        self.assertEqual(captured["target_status"], "APIFOX_SYNCED")
+        self.assertIn("retry Yunxiao close", result["nextAction"])
+
+    def test_resolve_rejects_unsupported_target(self) -> None:
+        from app.models import WorkflowResolveRequest
+        from app.workflow import WorkflowError, resolve_workflow
+
+        workflow = {"workflowId": "wf-test-1", "status": "NEEDS_HUMAN", "context": {}}
+
+        with patch("app.workflow.db.find_workflow_instance", return_value=workflow), patch(
+            "app.workflow.db.resolve_workflow_needs_human"
+        ) as db_resolve:
+            with self.assertRaises(WorkflowError) as raised:
+                resolve_workflow(
+                    "wf-test-1",
+                    WorkflowResolveRequest(operator="codex", targetStatus="CREATED", reason="bad target"),
+                )
+
+        db_resolve.assert_not_called()
+        self.assertIn("Unsupported resolve targetStatus", str(raised.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

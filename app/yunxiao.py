@@ -18,6 +18,12 @@ from app import db
 DEFAULT_ENDPOINT = "devops.cn-hangzhou.aliyuncs.com"
 OPENAPI_VERSION = "2021-06-25"
 CREATE_WORKITEM_ACTION = "CreateWorkitemV2"
+GET_WORKITEM_ACTION = "GetWorkItemInfo"
+CREATE_WORKITEM_COMMENT_ACTION = "CreateWorkitemComment"
+UPDATE_WORKITEM_FIELD_ACTION = "UpdateWorkitemField"
+UPDATE_WORKITEM_ACTION = "UpdateWorkItem"
+DEFAULT_DONE_STATUS_FIELD_ID = "status"
+DEFAULT_DONE_STATUS_NAMES = ("已完成", "完成", "已关闭", "done", "closed")
 SECRET_RE = re.compile(
     r"(?i)(token|secret|password|passwd|cookie|authorization|access[_-]?key)([=:]\s*)[^\s,;]+"
 )
@@ -29,7 +35,7 @@ class YunxiaoError(RuntimeError):
 
 
 def create_yunxiao_workitem(workflow: dict[str, Any], operator: str | None = None) -> dict[str, Any]:
-    config = _load_config(workflow)
+    config = _load_config(workflow, purpose="create")
     payload = build_create_workitem_payload(workflow, config, operator)
     if config.get("authType") == "legacy_token":
         response = _request_yunxiao_legacy_openapi(payload=payload, config=config, timeout=config["timeout"])
@@ -64,6 +70,177 @@ def create_yunxiao_workitem(workflow: dict[str, Any], operator: str | None = Non
         "authType": config.get("authType"),
         "response": _safe_response(response),
     }
+
+
+def close_yunxiao_workitem(workflow: dict[str, Any], operator: str | None = None) -> dict[str, Any]:
+    workitem_id = _clean_text(workflow.get("yunxiaoTaskId"))
+    if not workitem_id:
+        raise YunxiaoError(
+            "Yunxiao task id missing: workflow.yunxiaoTaskId is required before closing. "
+            "Solution: create or bind the Yunxiao workitem first."
+        )
+
+    config = _load_config(workflow, purpose="close")
+    if config.get("authType") == "legacy_token":
+        raise YunxiaoError(
+            "Yunxiao close/writeback requires acs_ak OpenAPI auth. "
+            "legacy_token only supports the compatibility create path and cannot close workitems. "
+            f"Solution: configure adapter_yunxiao_account_config accountName={config.get('accountName') or ''} "
+            "with auth_type=acs_ak, access_key_id, access_key_secret, and endpoint=devops.cn-hangzhou.aliyuncs.com."
+        )
+    current = get_yunxiao_workitem(workitem_id, config)
+    if _is_workitem_closed(current, config):
+        return {
+            "workitemIdentifier": workitem_id,
+            "alreadyClosed": True,
+            "closedStatus": _extract_status_identifier(current),
+            "closedStatusName": _extract_status_name(current),
+            "writeback": "skipped",
+            "configSource": config.get("configSource"),
+            "authType": config.get("authType"),
+        }
+
+    _validate_close_target(config)
+    comment = build_close_writeback_content(workflow, operator)
+    comment_response = add_yunxiao_workitem_comment(workitem_id, comment, config)
+    close_response = update_yunxiao_workitem_done_status(workitem_id, config)
+    after = get_yunxiao_workitem(workitem_id, config)
+    if _has_extractable_status(after) and not _is_workitem_closed(after, config):
+        raise YunxiaoError(
+            "Yunxiao workitem close verification failed: "
+            f"workitem={workitem_id} currentStatus={_extract_status_identifier(after) or _extract_status_name(after) or 'unknown'} "
+            f"expectedDoneStatus={config.get('doneStatusId') or config.get('closeTransitionId')}"
+        )
+    return {
+        "workitemIdentifier": workitem_id,
+        "alreadyClosed": False,
+        "closedStatus": _extract_status_identifier(after) or config.get("doneStatusId"),
+        "closedStatusName": _extract_status_name(after),
+        "writeback": "success",
+        "comment": _safe_response(comment_response),
+        "close": _safe_response(close_response),
+        "configSource": config.get("configSource"),
+        "authType": config.get("authType"),
+    }
+
+
+def get_yunxiao_workitem(workitem_id: str, config: dict[str, Any]) -> Any:
+    organization_id = urllib.parse.quote(config["organizationId"], safe="")
+    escaped_workitem_id = urllib.parse.quote(workitem_id, safe="")
+    path = f"/organization/{organization_id}/workitems/{escaped_workitem_id}"
+    if config.get("authType") == "legacy_token":
+        response = _request_yunxiao_legacy_rest(
+            method="GET",
+            path=path,
+            payload=None,
+            config=config,
+            timeout=config["timeout"],
+        )
+    else:
+        response = _request_yunxiao_openapi(
+            method="GET",
+            path=path,
+            action=GET_WORKITEM_ACTION,
+            payload=None,
+            config=config,
+            timeout=config["timeout"],
+        )
+    _require_api_success(response, "Yunxiao get workitem")
+    return response
+
+
+def add_yunxiao_workitem_comment(workitem_id: str, content: str, config: dict[str, Any]) -> Any:
+    organization_id = urllib.parse.quote(config["organizationId"], safe="")
+    payload = {
+        "workitemIdentifier": workitem_id,
+        "content": _clip(_sanitize(content), 6000),
+        "formatType": config.get("commentFormatType") or "MARKDOWN",
+    }
+    path = f"/organization/{organization_id}/workitems/comment"
+    if config.get("authType") == "legacy_token":
+        response = _request_yunxiao_legacy_rest(
+            method="POST",
+            path=path,
+            payload=payload,
+            config=config,
+            timeout=config["timeout"],
+        )
+    else:
+        response = _request_yunxiao_openapi(
+            method="POST",
+            path=path,
+            action=CREATE_WORKITEM_COMMENT_ACTION,
+            payload=payload,
+            config=config,
+            timeout=config["timeout"],
+        )
+    _require_api_success(response, "Yunxiao create workitem comment")
+    return response
+
+
+def update_yunxiao_workitem_done_status(workitem_id: str, config: dict[str, Any]) -> Any:
+    organization_id = urllib.parse.quote(config["organizationId"], safe="")
+    if config.get("closeTransitionId"):
+        path = f"/organization/{organization_id}/workitems/update"
+        payload = {
+            "identifier": workitem_id,
+            "transitionIdentifier": config["closeTransitionId"],
+        }
+        action = UPDATE_WORKITEM_ACTION
+    else:
+        path = f"/organization/{organization_id}/workitems/updateWorkitemField"
+        payload = {
+            "workitemIdentifier": workitem_id,
+            "updateWorkitemPropertyRequest": [
+                {
+                    "fieldIdentifier": config.get("doneStatusFieldId") or DEFAULT_DONE_STATUS_FIELD_ID,
+                    "value": config["doneStatusId"],
+                }
+            ],
+        }
+        action = UPDATE_WORKITEM_FIELD_ACTION
+
+    if config.get("authType") == "legacy_token":
+        response = _request_yunxiao_legacy_rest(
+            method="POST",
+            path=path,
+            payload=payload,
+            config=config,
+            timeout=config["timeout"],
+        )
+    else:
+        response = _request_yunxiao_openapi(
+            method="POST",
+            path=path,
+            action=action,
+            payload=payload,
+            config=config,
+            timeout=config["timeout"],
+        )
+    _require_api_success(response, "Yunxiao close workitem")
+    return response
+
+
+def build_close_writeback_content(workflow: dict[str, Any], operator: str | None = None) -> str:
+    context = workflow.get("context") or {}
+    coding_result = context.get("codingResult") if isinstance(context.get("codingResult"), dict) else {}
+    pipeline = context.get("pipeline") if isinstance(context.get("pipeline"), dict) else {}
+    apifox = context.get("apifox") if isinstance(context.get("apifox"), dict) else {}
+    apifox_result = apifox.get("lastResult") if isinstance(apifox.get("lastResult"), dict) else apifox
+    lines = [
+        "【Adapter 交付回写】",
+        f"Workflow：{workflow.get('workflowId') or ''}",
+        f"云效工作项：{workflow.get('yunxiaoTaskId') or ''}",
+        f"流水线：{workflow.get('yunxiaoPipelineId') or pipeline.get('pipelineId') or ''}/{workflow.get('yunxiaoBuildNumber') or pipeline.get('buildNumber') or ''}",
+        f"分支：{workflow.get('branchName') or pipeline.get('branchName') or coding_result.get('branchName') or ''}",
+        f"提交：{workflow.get('commitId') or pipeline.get('commitId') or coding_result.get('commitId') or ''}",
+        f"MR：{coding_result.get('mergeRequestUrl') or ''}",
+        f"Apifox：{'已同步' if apifox_result.get('imported') is True or workflow.get('apifoxProjectId') else '未确认'}",
+        f"Apifox 项目：{workflow.get('apifoxProjectId') or apifox_result.get('projectId') or ''}",
+        "结果：SUCCESS",
+        f"操作人：{operator or ''}",
+    ]
+    return _clip(_sanitize("\n".join(lines)), 6000)
 
 
 def build_create_workitem_payload(
@@ -184,6 +361,40 @@ def _request_yunxiao_legacy_openapi(
         raise YunxiaoError(f"Yunxiao legacy API network error: {_sanitize(str(exc))[:1000]}") from exc
 
 
+def _request_yunxiao_legacy_rest(
+    *,
+    method: str,
+    path: str,
+    payload: dict[str, Any] | None,
+    config: dict[str, Any],
+    timeout: int,
+) -> Any:
+    body = None
+    if payload is not None:
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    token = config["legacyToken"]
+    request = urllib.request.Request(
+        f"{config['scheme']}://{config['endpoint']}{path}",
+        data=body,
+        method=method.upper(),
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json; charset=utf-8",
+            "Authorization": f"Bearer {token}",
+            "x-yunxiao-token": token,
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            text = response.read().decode("utf-8", errors="replace")
+            return _parse_json(text)
+    except urllib.error.HTTPError as exc:
+        body_text = exc.read().decode("utf-8", errors="replace")
+        raise YunxiaoError(f"Yunxiao legacy API failed: status={exc.code} {_parse_error_detail(body_text)}") from exc
+    except urllib.error.URLError as exc:
+        raise YunxiaoError(f"Yunxiao legacy API network error: {_sanitize(str(exc))[:1000]}") from exc
+
+
 def _legacy_workitem_payload(payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
     legacy_payload = {
         "organizationId": config["organizationId"],
@@ -199,15 +410,15 @@ def _legacy_workitem_payload(payload: dict[str, Any], config: dict[str, Any]) ->
     return legacy_payload
 
 
-def _load_config(workflow: dict[str, Any]) -> dict[str, Any]:
+def _load_config(workflow: dict[str, Any], *, purpose: str = "create") -> dict[str, Any]:
     project_name = _resolve_project_name(workflow)
-    db_config = _load_db_config(project_name, workflow)
+    db_config = _load_db_config(project_name, workflow, purpose=purpose)
     if db_config:
         return db_config
-    return _load_env_config(project_name)
+    return _load_env_config(project_name, purpose=purpose)
 
 
-def _load_db_config(project_name: str | None, workflow: dict[str, Any]) -> dict[str, Any] | None:
+def _load_db_config(project_name: str | None, workflow: dict[str, Any], *, purpose: str) -> dict[str, Any] | None:
     if not db.configured():
         return None
     if not project_name:
@@ -238,13 +449,15 @@ def _load_db_config(project_name: str | None, workflow: dict[str, Any]) -> dict[
 
     scheme, endpoint = _normalize_endpoint(account_config.get("endpoint") or DEFAULT_ENDPOINT)
     auth_type = _normalize_auth_type(account_config.get("authType"))
-    assignee = _resolve_db_assignee(
-        {
-            **project_config,
-            "workflowContext": workflow.get("context") or {},
-        },
-        workflow_project_name=project_name,
-    )
+    assignee = {"name": None, "accountId": project_config.get("assignee"), "source": "not_required"}
+    if purpose == "create":
+        assignee = _resolve_db_assignee(
+            {
+                **project_config,
+                "workflowContext": workflow.get("context") or {},
+            },
+            workflow_project_name=project_name,
+        )
     config = {
         "configSource": "db",
         "authType": auth_type,
@@ -269,14 +482,20 @@ def _load_db_config(project_name: str | None, workflow: dict[str, Any]) -> dict[
         "participants": project_config.get("participants"),
         "trackers": project_config.get("trackers"),
         "verifier": project_config.get("verifier"),
+        "doneStatusId": project_config.get("doneStatusId"),
+        "doneStatusFieldId": project_config.get("doneStatusFieldId") or DEFAULT_DONE_STATUS_FIELD_ID,
+        "doneStatusNames": project_config.get("doneStatusNames"),
+        "commentFieldKey": project_config.get("commentFieldKey"),
+        "commentFormatType": project_config.get("commentFormatType") or "MARKDOWN",
+        "closeTransitionId": project_config.get("closeTransitionId"),
         "timeout": _parse_timeout(_first_env("YUNXIAO_OPENAPI_TIMEOUT") or "30"),
     }
-    _validate_config(config, _db_required(config))
+    _validate_config(config, _db_required(config, purpose))
     config["timeout"] = max(5, min(int(config["timeout"] or 30), 180))
     return config
 
 
-def _load_env_config(project_name: str | None) -> dict[str, Any]:
+def _load_env_config(project_name: str | None, *, purpose: str) -> dict[str, Any]:
     scheme, endpoint = _normalize_endpoint(
         _first_env("YUNXIAO_OPENAPI_ENDPOINT", "YUNXIAO_OPENAPI_BASE_URL") or DEFAULT_ENDPOINT
     )
@@ -304,9 +523,15 @@ def _load_env_config(project_name: str | None) -> dict[str, Any]:
         "participants": _first_env("YUNXIAO_WORKITEM_PARTICIPANTS"),
         "trackers": _first_env("YUNXIAO_WORKITEM_TRACKERS"),
         "verifier": _first_env("YUNXIAO_WORKITEM_VERIFIER"),
+        "doneStatusId": _first_env("YUNXIAO_DONE_STATUS_ID", "YUNXIAO_DONE_STATUS_VALUE"),
+        "doneStatusFieldId": _first_env("YUNXIAO_DONE_STATUS_FIELD_ID") or DEFAULT_DONE_STATUS_FIELD_ID,
+        "doneStatusNames": _first_env("YUNXIAO_DONE_STATUS_NAMES"),
+        "commentFieldKey": _first_env("YUNXIAO_COMMENT_FIELD_KEY", "YUNXIAO_WRITEBACK_FIELD"),
+        "commentFormatType": _first_env("YUNXIAO_COMMENT_FORMAT_TYPE") or "MARKDOWN",
+        "closeTransitionId": _first_env("YUNXIAO_CLOSE_TRANSITION_ID"),
         "timeout": _parse_timeout(_first_env("YUNXIAO_OPENAPI_TIMEOUT") or "30"),
     }
-    required = _env_required(config)
+    required = _env_required(config, purpose)
     _validate_config(config, required)
     config["timeout"] = max(5, min(int(config["timeout"] or 30), 180))
     return config
@@ -321,13 +546,14 @@ def _validate_config(config: dict[str, Any], required: dict[str, Any]) -> None:
         raise YunxiaoError(f"Yunxiao config missing: {', '.join(missing)}. {hint}")
 
 
-def _db_required(config: dict[str, Any]) -> dict[str, Any]:
+def _db_required(config: dict[str, Any], purpose: str) -> dict[str, Any]:
     required = {
         "adapter_yunxiao_project_config.organization_id": config["organizationId"],
         "adapter_yunxiao_project_config.project_id": config["projectId"],
-        "adapter_yunxiao_project_config.workitem_type_identifier": config["workitemTypeIdentifier"],
-        "adapter_yunxiao_project_member.default_account_id": config["assignee"],
     }
+    if purpose == "create":
+        required["adapter_yunxiao_project_config.workitem_type_identifier"] = config["workitemTypeIdentifier"]
+        required["adapter_yunxiao_project_member.default_account_id"] = config["assignee"]
     if config.get("authType") == "legacy_token":
         required["adapter_yunxiao_account_config.legacy_token"] = config["legacyToken"]
     else:
@@ -336,15 +562,27 @@ def _db_required(config: dict[str, Any]) -> dict[str, Any]:
     return required
 
 
-def _env_required(config: dict[str, Any]) -> dict[str, Any]:
-    return {
+def _env_required(config: dict[str, Any], purpose: str) -> dict[str, Any]:
+    required = {
         "ALIBABA_CLOUD_ACCESS_KEY_ID": config["accessKeyId"],
         "ALIBABA_CLOUD_ACCESS_KEY_SECRET": config["accessKeySecret"],
         "YUNXIAO_ORGANIZATION_ID": config["organizationId"],
         "YUNXIAO_PROJECT_ID": config["projectId"],
-        "YUNXIAO_WORKITEM_TYPE_IDENTIFIER": config["workitemTypeIdentifier"],
-        "YUNXIAO_WORKITEM_ASSIGNEE": config["assignee"],
     }
+    if purpose == "create":
+        required["YUNXIAO_WORKITEM_TYPE_IDENTIFIER"] = config["workitemTypeIdentifier"]
+        required["YUNXIAO_WORKITEM_ASSIGNEE"] = config["assignee"]
+    return required
+
+
+def _validate_close_target(config: dict[str, Any]) -> None:
+    if config.get("doneStatusId") or config.get("closeTransitionId"):
+        return
+    raise YunxiaoError(
+        "Yunxiao close config missing: done_status_id or close_transition_id. "
+        "Solution: configure adapter_yunxiao_project_config.done_status_id "
+        "or YUNXIAO_DONE_STATUS_ID after confirming the target done status in Yunxiao."
+    )
 
 
 def _resolve_project_name(workflow: dict[str, Any]) -> str | None:
@@ -548,6 +786,87 @@ def _extract_workitem_identifier(response: Any) -> str | None:
         if identifier and (success is None or _is_success(success)):
             return str(identifier)
     return None
+
+
+def _extract_status_identifier(response: Any) -> str | None:
+    for source in _dict_candidates(response):
+        for key in ("statusIdentifier", "statusId", "statusID", "status"):
+            value = source.get(key)
+            if isinstance(value, dict):
+                nested = _first_present(value, "identifier", "id", "value")
+                if nested:
+                    return nested
+                continue
+            text = _clean_text(value)
+            if text:
+                return text
+        fields = source.get("fieldValueList") or source.get("customFields") or source.get("fieldValues")
+        if isinstance(fields, list):
+            for item in fields:
+                if not isinstance(item, dict):
+                    continue
+                identifier = _clean_text(
+                    item.get("fieldIdentifier") or item.get("identifier") or item.get("propertyKey") or item.get("key")
+                )
+                if identifier and identifier.lower() in {"status", "statusidentifier", "statusid"}:
+                    value = item.get("value") or item.get("fieldValue") or item.get("propertyValue")
+                    return _clean_text(value)
+    return None
+
+
+def _extract_status_name(response: Any) -> str | None:
+    for source in _dict_candidates(response):
+        for key in ("statusName", "statusDisplayName", "displayStatus", "status"):
+            value = source.get(key)
+            if isinstance(value, dict):
+                nested = _first_present(value, "name", "displayName", "label")
+                if nested:
+                    return nested
+                continue
+            text = _clean_text(value)
+            if text:
+                return text
+    return None
+
+
+def _has_extractable_status(response: Any) -> bool:
+    return bool(_extract_status_identifier(response) or _extract_status_name(response))
+
+
+def _is_workitem_closed(response: Any, config: dict[str, Any]) -> bool:
+    done_status_id = _clean_text(config.get("doneStatusId"))
+    status_identifier = _extract_status_identifier(response)
+    if done_status_id and status_identifier and status_identifier == done_status_id:
+        return True
+    status_name = _extract_status_name(response)
+    candidates = set(DEFAULT_DONE_STATUS_NAMES)
+    for name in _csv(config.get("doneStatusNames")):
+        candidates.add(name.lower())
+    if status_identifier and status_identifier.lower() in candidates:
+        return True
+    return bool(status_name and status_name.lower() in candidates)
+
+
+def _require_api_success(response: Any, action: str) -> None:
+    if _api_success(response):
+        return
+    raise YunxiaoError(f"{action} failed: {_response_error(response)}")
+
+
+def _api_success(response: Any) -> bool:
+    if response in (None, ""):
+        return True
+    if not isinstance(response, dict):
+        return True
+    for source in _dict_candidates(response):
+        if source.get("success") is not None:
+            return _is_success(source.get("success"))
+        code = source.get("errorCode") or source.get("errorCodeStr")
+        if code:
+            return False
+        if str(source.get("code") or "").lower() in {"error", "failed", "false"}:
+            return False
+    return True
 
 
 def _response_error(response: Any) -> str:

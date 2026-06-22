@@ -93,6 +93,14 @@ class WorkflowAdvanceRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class WorkflowResolveRequest(BaseModel):
+    operator: str = "codex"
+    target_status: str = Field(alias="targetStatus")
+    reason: str | None = None
+
+    model_config = {"populate_by_name": True}
+
+
 class WorkflowRequirementRequest(BaseModel):
     operator: str = "codex"
     summary: str

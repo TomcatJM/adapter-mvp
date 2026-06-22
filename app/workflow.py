@@ -9,13 +9,17 @@ from app.models import (
     WorkflowAdvanceRequest,
     WorkflowCodingResultRequest,
     WorkflowRequirementRequest,
+    WorkflowResolveRequest,
     WorkflowStartRequest,
 )
-from app.yunxiao import YunxiaoError, create_yunxiao_workitem
+from app.yunxiao import YunxiaoError, close_yunxiao_workitem, create_yunxiao_workitem
 
 
 class WorkflowError(RuntimeError):
     pass
+
+
+RESOLVABLE_TARGET_STATUSES = {"APIFOX_SYNCED", "PIPELINE_SUCCESS", "CODING_REQUESTED"}
 
 
 def start_workflow(request: WorkflowStartRequest) -> dict[str, Any]:
@@ -70,7 +74,38 @@ def advance_workflow(workflow_id: str, request: WorkflowAdvanceRequest) -> dict[
         }
     if status == "REQUIREMENT_PARSED":
         return _advance_requirement_to_yunxiao_task(workflow, request)
+    if status == "APIFOX_SYNCED":
+        return _advance_apifox_synced_to_yunxiao_closed(workflow, request)
+    if status == "YUNXIAO_TASK_CLOSED":
+        return {
+            "workflow": workflow,
+            "advanced": False,
+            "existing": True,
+            "reason": "workflow already YUNXIAO_TASK_CLOSED",
+        }
     raise WorkflowError(f"Workflow status cannot advance automatically: {status}")
+
+
+def resolve_workflow(workflow_id: str, request: WorkflowResolveRequest) -> dict[str, Any]:
+    workflow = _load_workflow(workflow_id)
+    if workflow["status"] != "NEEDS_HUMAN":
+        raise WorkflowError(f"Workflow status is not NEEDS_HUMAN: {workflow['status']}")
+    target_status = _clean_text(request.target_status)
+    if target_status not in RESOLVABLE_TARGET_STATUSES:
+        allowed = ", ".join(sorted(RESOLVABLE_TARGET_STATUSES))
+        raise WorkflowError(f"Unsupported resolve targetStatus: {target_status}. Allowed: {allowed}")
+    resolved = db.resolve_workflow_needs_human(
+        workflow_id=workflow_id,
+        target_status=target_status,
+        operator=_clean_text(request.operator),
+        reason=_clean_text(request.reason),
+        event_payload={"targetStatus": target_status, "reason": _clean_text(request.reason)},
+    )
+    return {
+        "workflow": resolved,
+        "resolved": True,
+        "nextAction": _resolve_next_action(target_status),
+    }
 
 
 def submit_requirement(workflow_id: str, request: WorkflowRequirementRequest) -> dict[str, Any]:
@@ -266,6 +301,73 @@ def _advance_requirement_to_yunxiao_task(workflow: dict[str, Any], request: Work
     }
 
 
+def _advance_apifox_synced_to_yunxiao_closed(
+    workflow: dict[str, Any],
+    request: WorkflowAdvanceRequest,
+) -> dict[str, Any]:
+    workflow_id = workflow["workflowId"]
+    try:
+        result = close_yunxiao_workitem(workflow, _clean_text(request.operator))
+    except YunxiaoError as exc:
+        failed = db.mark_workflow_needs_human(
+            workflow_id=workflow_id,
+            from_status="APIFOX_SYNCED",
+            error=str(exc),
+            operator=_clean_text(request.operator),
+            event_type="yunxiao_workitem_close_failed",
+            event_payload={
+                "step": "yunxiao_workitem_close",
+                "yunxiaoTaskId": workflow.get("yunxiaoTaskId"),
+            },
+        )
+        raise WorkflowError(f"Yunxiao workitem close failed: {failed['lastError']}") from exc
+
+    context = _merge_context(
+        workflow,
+        {
+            "yunxiao": {
+                **((workflow.get("context") or {}).get("yunxiao") or {}),
+                "closeResult": {
+                    "workitemIdentifier": result["workitemIdentifier"],
+                    "alreadyClosed": result.get("alreadyClosed"),
+                    "closedStatus": result.get("closedStatus"),
+                    "closedStatusName": result.get("closedStatusName"),
+                    "writeback": result.get("writeback"),
+                    "configSource": result.get("configSource"),
+                },
+            }
+        },
+    )
+    event_type = "yunxiao_workitem_close_skipped" if result.get("alreadyClosed") else "yunxiao_workitem_closed"
+    message = "Yunxiao workitem already closed" if result.get("alreadyClosed") else "Yunxiao workitem closed"
+    updated = db.update_workflow_yunxiao_task_closed(
+        workflow_id=workflow_id,
+        context=context,
+        operator=_clean_text(request.operator),
+        event_type=event_type,
+        message=message,
+        event_payload={
+            "yunxiaoTaskId": result["workitemIdentifier"],
+            "closedStatus": result.get("closedStatus"),
+            "closedStatusName": result.get("closedStatusName"),
+            "alreadyClosed": result.get("alreadyClosed"),
+            "writeback": result.get("writeback"),
+        },
+    )
+    return {
+        "workflow": updated,
+        "advanced": True,
+        "yunxiao": {
+            "workitemIdentifier": result["workitemIdentifier"],
+            "alreadyClosed": result.get("alreadyClosed"),
+            "closedStatus": result.get("closedStatus"),
+            "closedStatusName": result.get("closedStatusName"),
+            "writeback": result.get("writeback"),
+        },
+        "nextAction": "delivery workflow is complete",
+    }
+
+
 def _document_summary(doc: dict[str, Any]) -> dict[str, Any]:
     kind = doc.get("kind")
     summary: dict[str, Any] = {
@@ -302,6 +404,16 @@ def _load_workflow(workflow_id: str) -> dict[str, Any]:
     if not workflow:
         raise WorkflowError(f"Workflow not found: {workflow_id}")
     return workflow
+
+
+def _resolve_next_action(target_status: str) -> str:
+    if target_status == "APIFOX_SYNCED":
+        return "POST /workflow/{workflow_id}/advance to retry Yunxiao close/writeback"
+    if target_status == "PIPELINE_SUCCESS":
+        return "retry Apifox sync through Yunxiao flow-event callback"
+    if target_status == "CODING_REQUESTED":
+        return "continue coding and POST /workflow/{workflow_id}/coding-result"
+    return "inspect workflow and continue manually"
 
 
 def _merge_context(workflow: dict[str, Any], changes: dict[str, Any]) -> dict[str, Any]:

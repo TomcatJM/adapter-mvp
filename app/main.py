@@ -22,6 +22,7 @@ from app.models import (
     WorkflowAdvanceRequest,
     WorkflowCodingResultRequest,
     WorkflowRequirementRequest,
+    WorkflowResolveRequest,
     WorkflowStartRequest,
     YunxiaoPipelineFailureCallback,
     YunxiaoTaskCallback,
@@ -33,6 +34,7 @@ from app.workflow import (
     WorkflowError,
     advance_workflow,
     get_workflow,
+    resolve_workflow,
     start_workflow,
     submit_coding_result,
     submit_requirement,
@@ -245,6 +247,23 @@ def workflow_requirement(workflow_id: str, request: WorkflowRequirementRequest):
 def workflow_coding_result(workflow_id: str, request: WorkflowCodingResultRequest):
     try:
         return submit_coding_result(workflow_id, request)
+    except WorkflowError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post(
+    "/workflow/{workflow_id}/resolve",
+    summary="恢复交付工作流",
+    tags=["交付工作流"],
+    dependencies=[Depends(require_api_token)],
+)
+def workflow_resolve(workflow_id: str, request: WorkflowResolveRequest):
+    try:
+        return resolve_workflow(workflow_id, request)
     except WorkflowError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:

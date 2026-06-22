@@ -12,7 +12,8 @@ Prefer environment variables for AK secrets so they do not land in shell history
       --default-assignee user-id \
       --member-name 姬志猛 \
       --member-account-id user-id \
-      --member-default
+      --member-default \
+      --done-status-id done-status-id
 
 Legacy CLI token configs can be imported explicitly:
   python scripts/upsert_yunxiao_config.py --auth-type legacy_token \
@@ -81,6 +82,32 @@ def main() -> None:
     parser.add_argument("--participants", help="参与人，逗号分隔")
     parser.add_argument("--trackers", help="关注人，逗号分隔")
     parser.add_argument("--verifier", help="验证人云效账号 ID")
+    parser.add_argument("--done-status-id", default=os.getenv("YUNXIAO_DONE_STATUS_ID"), help="云效完成状态 ID")
+    parser.add_argument(
+        "--done-status-field-id",
+        default=os.getenv("YUNXIAO_DONE_STATUS_FIELD_ID") or "status",
+        help="云效状态字段 ID，默认 status",
+    )
+    parser.add_argument(
+        "--done-status-names",
+        default=os.getenv("YUNXIAO_DONE_STATUS_NAMES"),
+        help="已完成状态名称，逗号分隔，用于幂等判断",
+    )
+    parser.add_argument(
+        "--comment-field-key",
+        default=os.getenv("YUNXIAO_COMMENT_FIELD_KEY") or os.getenv("YUNXIAO_WRITEBACK_FIELD"),
+        help="回写字段 Key，保留扩展",
+    )
+    parser.add_argument(
+        "--comment-format-type",
+        default=os.getenv("YUNXIAO_COMMENT_FORMAT_TYPE") or "MARKDOWN",
+        help="评论格式，默认 MARKDOWN",
+    )
+    parser.add_argument(
+        "--close-transition-id",
+        default=os.getenv("YUNXIAO_CLOSE_TRANSITION_ID"),
+        help="云效关闭流转 ID；配置后优先于 done-status-id",
+    )
     parser.add_argument("--remark", default="")
     parser.add_argument(
         "--skip-account",
@@ -184,9 +211,15 @@ def main() -> None:
                         participants,
                         trackers,
                         verifier,
+                        done_status_id,
+                        done_status_field_id,
+                        done_status_names,
+                        comment_field_key,
+                        comment_format_type,
+                        close_transition_id,
                         remark
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON DUPLICATE KEY UPDATE
                         account_name = VALUES(account_name),
                         organization_id = VALUES(organization_id),
@@ -200,6 +233,12 @@ def main() -> None:
                         participants = VALUES(participants),
                         trackers = VALUES(trackers),
                         verifier = VALUES(verifier),
+                        done_status_id = VALUES(done_status_id),
+                        done_status_field_id = VALUES(done_status_field_id),
+                        done_status_names = VALUES(done_status_names),
+                        comment_field_key = VALUES(comment_field_key),
+                        comment_format_type = VALUES(comment_format_type),
+                        close_transition_id = VALUES(close_transition_id),
                         remark = VALUES(remark)
                     """,
                     (
@@ -216,6 +255,12 @@ def main() -> None:
                         args.participants,
                         args.trackers,
                         args.verifier,
+                        args.done_status_id,
+                        args.done_status_field_id,
+                        args.done_status_names,
+                        args.comment_field_key,
+                        args.comment_format_type,
+                        args.close_transition_id,
                         args.remark or None,
                     ),
                 )
