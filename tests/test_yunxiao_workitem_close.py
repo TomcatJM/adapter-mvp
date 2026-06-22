@@ -46,7 +46,7 @@ class YunxiaoWorkitemCloseTest(unittest.TestCase):
         self.assertEqual([item["action"] for item in captured], [
             "GetWorkItemInfo",
             "CreateWorkitemComment",
-            "UpdateWorkitemField",
+            "UpdateWorkItem",
             "GetWorkItemInfo",
         ])
         comment_payload = captured[1]["payload"]
@@ -55,9 +55,10 @@ class YunxiaoWorkitemCloseTest(unittest.TestCase):
         self.assertIn("Apifox：已同步", comment_payload["content"])
         self.assertNotIn("secret-value", comment_payload["content"])
         update_payload = captured[2]["payload"]
-        self.assertEqual(update_payload["workitemIdentifier"], "YX-1")
-        self.assertEqual(update_payload["updateWorkitemPropertyRequest"][0]["fieldIdentifier"], "status")
-        self.assertEqual(update_payload["updateWorkitemPropertyRequest"][0]["value"], "done")
+        self.assertEqual(update_payload["identifier"], "YX-1")
+        self.assertEqual(update_payload["propertyKey"], "status")
+        self.assertEqual(update_payload["propertyValue"], "done")
+        self.assertEqual(update_payload["fieldType"], "status")
 
     def test_close_workitem_already_closed_is_idempotent(self) -> None:
         from app.yunxiao import close_yunxiao_workitem

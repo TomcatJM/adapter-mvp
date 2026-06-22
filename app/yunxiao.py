@@ -20,7 +20,6 @@ OPENAPI_VERSION = "2021-06-25"
 CREATE_WORKITEM_ACTION = "CreateWorkitemV2"
 GET_WORKITEM_ACTION = "GetWorkItemInfo"
 CREATE_WORKITEM_COMMENT_ACTION = "CreateWorkitemComment"
-UPDATE_WORKITEM_FIELD_ACTION = "UpdateWorkitemField"
 UPDATE_WORKITEM_ACTION = "UpdateWorkItem"
 DEFAULT_DONE_STATUS_FIELD_ID = "status"
 DEFAULT_DONE_STATUS_NAMES = ("已完成", "完成", "已关闭", "done", "closed")
@@ -188,17 +187,15 @@ def update_yunxiao_workitem_done_status(workitem_id: str, config: dict[str, Any]
         }
         action = UPDATE_WORKITEM_ACTION
     else:
-        path = f"/organization/{organization_id}/workitems/updateWorkitemField"
+        field_type = config.get("doneStatusFieldId") or DEFAULT_DONE_STATUS_FIELD_ID
+        path = f"/organization/{organization_id}/workitems/update"
         payload = {
-            "workitemIdentifier": workitem_id,
-            "updateWorkitemPropertyRequest": [
-                {
-                    "fieldIdentifier": config.get("doneStatusFieldId") or DEFAULT_DONE_STATUS_FIELD_ID,
-                    "value": config["doneStatusId"],
-                }
-            ],
+            "identifier": workitem_id,
+            "propertyKey": field_type,
+            "propertyValue": config["doneStatusId"],
+            "fieldType": field_type,
         }
-        action = UPDATE_WORKITEM_FIELD_ACTION
+        action = UPDATE_WORKITEM_ACTION
 
     if config.get("authType") == "legacy_token":
         response = _request_yunxiao_legacy_rest(
