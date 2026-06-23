@@ -4,7 +4,12 @@ from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from app import db
-from app.apifox import OpenapiValidationError, fetch_sanitized_openapi
+from app.apifox import (
+    OpenapiSignatureError,
+    OpenapiValidationError,
+    fetch_sanitized_openapi,
+    verify_signed_upstream_url,
+)
 from app.auth import require_api_token, require_execute_approval
 from app.dingtalk_docs import DingTalkDocError, read_dingtalk_doc, resolve_dingtalk_operator
 from app.audit import (
@@ -103,9 +108,12 @@ def health() -> dict[str, str]:
 
 
 @app.get("/adapter/openapi/{project_name}", summary="获取清洗后的 OpenAPI", tags=["OpenAPI"])
-def adapter_openapi(project_name: str):
+def adapter_openapi(project_name: str, upstreamUrl: str | None = None, signature: str | None = None):
     try:
-        return fetch_sanitized_openapi(project_name)
+        upstream_url = verify_signed_upstream_url(project_name, upstreamUrl, signature)
+        return fetch_sanitized_openapi(project_name, upstream_url=upstream_url)
+    except OpenapiSignatureError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except OpenapiValidationError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

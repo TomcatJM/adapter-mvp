@@ -96,6 +96,7 @@ def ensure_schema() -> None:
                         id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
                         project_name VARCHAR(128) NOT NULL COMMENT '项目名称，例如 jdb-order',
                         apifox_project_id VARCHAR(64) NOT NULL COMMENT 'Apifox项目ID',
+                        openapi_url VARCHAR(2048) NULL COMMENT '项目专属OpenAPI地址',
                         remark VARCHAR(512) NULL COMMENT '备注',
                         created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
                         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -350,6 +351,8 @@ def _ensure_comments(cursor) -> None:
         "ALTER TABLE adapter_apifox_project_config MODIFY id BIGINT NOT NULL AUTO_INCREMENT COMMENT '自增主键'",
         "ALTER TABLE adapter_apifox_project_config MODIFY project_name VARCHAR(128) NOT NULL COMMENT '项目名称，例如 jdb-order'",
         "ALTER TABLE adapter_apifox_project_config MODIFY apifox_project_id VARCHAR(64) NOT NULL COMMENT 'Apifox项目ID'",
+        "ALTER TABLE adapter_apifox_project_config ADD COLUMN openapi_url VARCHAR(2048) NULL COMMENT '项目专属OpenAPI地址' AFTER apifox_project_id",
+        "ALTER TABLE adapter_apifox_project_config MODIFY openapi_url VARCHAR(2048) NULL COMMENT '项目专属OpenAPI地址'",
         "ALTER TABLE adapter_apifox_project_config MODIFY remark VARCHAR(512) NULL COMMENT '备注'",
         "ALTER TABLE adapter_apifox_project_config MODIFY created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'",
         "ALTER TABLE adapter_apifox_project_config MODIFY updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'",
@@ -1175,7 +1178,7 @@ def find_apifox_project_config(project_name: str) -> dict[str, Any] | None:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT project_name, apifox_project_id, remark
+                    SELECT project_name, apifox_project_id, openapi_url, remark
                     FROM adapter_apifox_project_config
                     WHERE LOWER(project_name) = LOWER(%s)
                     LIMIT 1
@@ -1188,6 +1191,7 @@ def find_apifox_project_config(project_name: str) -> dict[str, Any] | None:
         return {
             "projectName": row.get("project_name"),
             "apifoxProjectId": row.get("apifox_project_id"),
+            "openapiUrl": row.get("openapi_url"),
             "remark": row.get("remark"),
         }
     except Exception:

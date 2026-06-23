@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
+import hmac
 import json
 import os
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -13,6 +16,10 @@ from app import db
 
 
 class OpenapiValidationError(ValueError):
+    pass
+
+
+class OpenapiSignatureError(ValueError):
     pass
 
 
@@ -32,7 +39,7 @@ def maybe_import_from_flow_event(payload: dict[str, Any]) -> dict[str, Any]:
     if missing:
         return {"enabled": True, "imported": False, "reason": _missing_config_reason(config, missing), **safe_config}
     if config["stripProjectPath"] and config.get("projectName"):
-        preflight = _preflight_openapi(config["projectName"])
+        preflight = _preflight_openapi(config["projectName"], config.get("upstreamOpenapiUrl"))
         if not preflight["ok"]:
             return {
                 "enabled": True,
@@ -83,14 +90,21 @@ def _resolve_config(payload: dict[str, Any]) -> dict[str, Any]:
         or (project_config or {}).get("apifoxProjectId")
         or (os.getenv(f"APIFOX_PROJECT_{project_key}_ID") if project_name else None)
     )
+    payload_openapi_url = _pick(params, "OPENAPI_URL", "APIFOX_OPENAPI_URL")
     upstream_openapi_url = (
-        _pick(params, "OPENAPI_URL", "APIFOX_OPENAPI_URL")
+        payload_openapi_url
+        or (project_config or {}).get("openapiUrl")
         or (os.getenv(f"OPENAPI_{project_key}_URL") if project_name else None)
         or os.getenv("OPENAPI_URL")
         or (_openapi_url_from_template(project_name, project_key) if project_name else None)
     )
     strip_project_path = os.getenv("APIFOX_STRIP_PROJECT_PATH", "true").lower() == "true"
-    openapi_url = _adapter_openapi_url(project_name) if strip_project_path and project_name else upstream_openapi_url
+    signed_upstream_url = str(payload_openapi_url) if payload_openapi_url else None
+    openapi_url = (
+        _adapter_openapi_url(project_name, signed_upstream_url)
+        if strip_project_path and project_name
+        else upstream_openapi_url
+    )
     return {
         "autoImport": os.getenv("APIFOX_AUTO_IMPORT", "false").lower() == "true",
         "pipelineId": pipeline_id,
@@ -157,19 +171,26 @@ def _safe_config(config: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in config.items() if key != "accessToken"}
 
 
-def _preflight_openapi(project_name: str) -> dict[str, Any]:
+def _preflight_openapi(project_name: str, upstream_url: str | None = None) -> dict[str, Any]:
     try:
-        spec = fetch_sanitized_openapi(project_name)
+        spec = fetch_sanitized_openapi(project_name, upstream_url=upstream_url)
         return {"ok": True, "pathCount": len(spec.get("paths") or {})}
     except Exception as exc:
         return {"ok": False, "statusCode": None, "error": str(exc)}
 
 
-def fetch_sanitized_openapi(project_name: str) -> dict[str, Any]:
+def fetch_sanitized_openapi(project_name: str, upstream_url: str | None = None) -> dict[str, Any]:
     if project_name == "_empty":
         return {"openapi": "3.1.0", "info": {"title": "empty-api-cleanup", "version": "1.0.0"}, "paths": {}}
-    upstream_url = _openapi_url_from_template(project_name, _normalize_key(project_name))
-    with urllib.request.urlopen(upstream_url, timeout=30) as response:
+    project_key = _normalize_key(project_name)
+    project_config = _find_project_config(project_name)
+    resolved_upstream_url = upstream_url or (
+        (project_config or {}).get("openapiUrl")
+        or os.getenv(f"OPENAPI_{project_key}_URL")
+        or os.getenv("OPENAPI_URL")
+        or _openapi_url_from_template(project_name, project_key)
+    )
+    with urllib.request.urlopen(resolved_upstream_url, timeout=30) as response:
         body = response.read().decode("utf-8", errors="replace")
     try:
         payload: Any = json.loads(body)
@@ -245,9 +266,42 @@ def _strip_path_prefix(path: str, prefix: str) -> str:
     return path
 
 
-def _adapter_openapi_url(project_name: str) -> str:
+def _adapter_openapi_url(project_name: str, upstream_url: str | None = None) -> str:
     base_url = os.getenv("ADAPTER_PUBLIC_BASE_URL", "http://47.116.102.238:18080").rstrip("/")
-    return f"{base_url}/adapter/openapi/{project_name}"
+    url = f"{base_url}/adapter/openapi/{project_name}"
+    if not upstream_url:
+        return url
+    secret = _openapi_url_signing_secret()
+    if not secret:
+        return upstream_url
+    query = urllib.parse.urlencode(
+        {
+            "upstreamUrl": upstream_url,
+            "signature": _sign_openapi_upstream(project_name, upstream_url, secret),
+        }
+    )
+    return f"{url}?{query}"
+
+
+def verify_signed_upstream_url(project_name: str, upstream_url: str | None, signature: str | None) -> str | None:
+    if not upstream_url:
+        return None
+    secret = _openapi_url_signing_secret()
+    if not secret or not signature:
+        raise OpenapiSignatureError("missing OpenAPI upstream signature")
+    expected = _sign_openapi_upstream(project_name, upstream_url, secret)
+    if not hmac.compare_digest(expected, signature):
+        raise OpenapiSignatureError("invalid OpenAPI upstream signature")
+    return upstream_url
+
+
+def _openapi_url_signing_secret() -> str | None:
+    return os.getenv("APIFOX_OPENAPI_SIGNING_SECRET") or os.getenv("ADAPTER_API_TOKEN")
+
+
+def _sign_openapi_upstream(project_name: str, upstream_url: str, secret: str) -> str:
+    message = f"{project_name}\n{upstream_url}".encode("utf-8")
+    return hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
 
 
 def _find_project_config(project_name: str) -> dict[str, Any] | None:

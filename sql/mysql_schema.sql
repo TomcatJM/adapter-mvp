@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS adapter_apifox_project_config (
     id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
     project_name VARCHAR(128) NOT NULL COMMENT '项目名称，例如 jdb-order',
     apifox_project_id VARCHAR(64) NOT NULL COMMENT 'Apifox项目ID',
+    openapi_url VARCHAR(2048) NULL COMMENT '项目专属OpenAPI地址',
     remark VARCHAR(512) NULL COMMENT '备注',
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP

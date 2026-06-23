@@ -501,6 +501,18 @@ Adapter 选择 Apifox 项目的优先级：
 
 如果以上规则都找不到项目名或项目 ID，Adapter 会返回明确的 skipped/failed 原因，不会使用默认 Apifox 项目静默导入。
 
+Adapter 选择 OpenAPI 来源的优先级：
+
+1. 云效 `globalParams` 直接传 `OPENAPI_URL` / `APIFOX_OPENAPI_URL`。
+2. 数据库 `adapter_apifox_project_config.openapi_url`。
+3. 环境变量 `OPENAPI_<KEY>_URL`。
+4. 环境变量 `OPENAPI_URL`。
+5. 全局模板 `APIFOX_OPENAPI_URL_TEMPLATE`。
+
+因此某个项目不走统一网关时，不要改全局模板；给该项目单独维护 `openapi_url` 即可，其他项目仍沿用模板。
+
+当 `APIFOX_STRIP_PROJECT_PATH=true` 且 payload 临时传了 `OPENAPI_URL` 时，Adapter 会把该 upstream URL 写入带签名的 `/adapter/openapi/{project}` 查询参数。签名密钥优先使用 `APIFOX_OPENAPI_SIGNING_SECRET`，未配置时使用 `ADAPTER_API_TOKEN`，避免清洗端点被当作任意 URL 代理。
+
 安全默认值：
 
 ```text
@@ -550,10 +562,10 @@ https://micro-api-test.kidcastle.com.cn/gw/jdb-order/v3/api-docs
 
 ```text
 adapter_apifox_pipeline_config: pipeline_id -> project_name
-adapter_apifox_project_config: project_name -> apifox_project_id
+adapter_apifox_project_config: project_name -> apifox_project_id, openapi_url
 ```
 
-如果以后网关地址变化，可通过环境变量覆盖模板：
+如果某个项目的 OpenAPI 不在统一网关上，在项目表维护 `openapi_url`；不要为了单项目改全局模板。只有统一网关整体变化时，才通过环境变量覆盖模板：
 
 ```text
 APIFOX_OPENAPI_URL_TEMPLATE=https://micro-api-test.kidcastle.com.cn/gw/{project}/v3/api-docs
@@ -705,6 +717,7 @@ adapter_apifox_pipeline_config
 ```text
 project_name       项目名称，例如 jdb-order
 apifox_project_id  Apifox 项目 ID，例如 7049238
+openapi_url        项目专属 OpenAPI JSON/YAML 直链；为空时走环境变量或全局模板
 remark             备注
 ```
 
@@ -722,6 +735,7 @@ remark        备注
 python scripts\upsert_apifox_project_config.py `
   --project-name jdb-order `
   --apifox-project-id 7049238 `
+  --openapi-url https://micro-api-test.kidcastle.com.cn/gw/jdb-order/v3/api-docs `
   --remark 订单服务接口项目-流水线重新导入目标
 
 python scripts\upsert_apifox_pipeline_config.py `
@@ -739,12 +753,20 @@ python scripts\upsert_apifox_pipeline_config.py `
 Adapter 解析优先级：
 
 ```text
+Apifox 项目 ID:
 1. payload.APIFOX_PROJECT_ID
 2. adapter_apifox_project_config.project_name -> apifox_project_id
 3. 环境变量 APIFOX_PROJECT_<KEY>_ID
+
+OpenAPI 来源:
+1. payload.OPENAPI_URL / payload.APIFOX_OPENAPI_URL
+2. adapter_apifox_project_config.project_name -> openapi_url
+3. 环境变量 OPENAPI_<KEY>_URL
+4. 环境变量 OPENAPI_URL
+5. 环境变量 APIFOX_OPENAPI_URL_TEMPLATE
 ```
 
-因此 `jdb-order` 会优先从数据库表取到 `7049238`。
+因此 `jdb-order` 会优先从数据库表取到 `7049238`；如果该项目填了 `openapi_url`，也会优先使用项目专属 OpenAPI 地址。
 
 若云效 payload 不传项目名，Adapter 会先按 `pipeline_id` 从 `adapter_apifox_pipeline_config` 查到项目名，再从 `adapter_apifox_project_config` 查到对应 Apifox 项目 ID。DB 未命中时不会使用默认项目 ID 硬导，会返回缺少项目映射的提示。
 
@@ -786,7 +808,7 @@ http://47.116.102.238:18080/adapter/openapi/jdb-order
 该端点会：
 
 ```text
-1. 拉取 upstreamOpenapiUrl=https://micro-api-test.kidcastle.com.cn/gw/jdb-order/v3/api-docs
+1. 按项目配置解析 upstreamOpenapiUrl；项目未配置时才回退到 https://micro-api-test.kidcastle.com.cn/gw/jdb-order/v3/api-docs
 2. 将 paths 中的 /jdb-order/* 改写为 /*
 3. 设置 servers=[{"url":"/jdb-order"}]
 4. Apifox import-openapi 使用 prependBasePath=false，避免再次追加 basePath

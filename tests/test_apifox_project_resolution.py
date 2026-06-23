@@ -1,14 +1,16 @@
+import json
 import os
 import sys
 import unittest
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from app.apifox import maybe_import_from_flow_event  # noqa: E402
+from app.apifox import fetch_sanitized_openapi, maybe_import_from_flow_event, verify_signed_upstream_url  # noqa: E402
 
 
 class ApifoxProjectResolutionTest(unittest.TestCase):
@@ -72,6 +74,101 @@ class ApifoxProjectResolutionTest(unittest.TestCase):
         self.assertEqual(result["projectConfigSource"], "unresolved")
         self.assertIn("missing Apifox project ID for projectName=adapter-mvp", result["reason"])
         self.assertIn("APIFOX_PROJECT_ADAPTER_MVP_ID", result["reason"])
+
+    def test_db_project_config_can_provide_project_specific_openapi_url(self) -> None:
+        payload = {
+            "task": {"pipelineId": "4437990", "statusCode": "SUCCESS"},
+            "sources": [],
+            "globalParams": [{"key": "PROJECT_NAME", "value": "adapter-mvp"}],
+        }
+        project_config = {
+            "projectName": "adapter-mvp",
+            "apifoxProjectId": "8460173",
+            "openapiUrl": "http://40.example.test:18080/openapi.json",
+            "remark": "adapter-mvp on server 40",
+        }
+
+        with patch("app.apifox._find_project_config", return_value=project_config), patch(
+            "app.apifox._preflight_openapi", return_value={"ok": True, "pathCount": 1}
+        ), patch("app.apifox._import_openapi", return_value={"statusCode": 201}) as import_openapi:
+            result = maybe_import_from_flow_event(payload)
+
+        import_openapi.assert_called_once()
+        self.assertTrue(result["imported"])
+        self.assertEqual(result["projectId"], "8460173")
+        self.assertEqual(result["projectConfigSource"], "database")
+        self.assertEqual(result["upstreamOpenapiUrl"], "http://40.example.test:18080/openapi.json")
+
+    def test_payload_openapi_url_overrides_db_project_openapi_url(self) -> None:
+        os.environ["ADAPTER_API_TOKEN"] = "adapter-token-for-signing"
+        os.environ["ADAPTER_PUBLIC_BASE_URL"] = "http://adapter.example.test"
+        os.environ["APIFOX_STRIP_PROJECT_PATH"] = "true"
+        payload = {
+            "task": {"pipelineId": "4437990", "statusCode": "SUCCESS"},
+            "sources": [],
+            "globalParams": [
+                {"key": "PROJECT_NAME", "value": "adapter-mvp"},
+                {"key": "OPENAPI_URL", "value": "http://payload.example.test/openapi.json"},
+            ],
+        }
+        project_config = {
+            "projectName": "adapter-mvp",
+            "apifoxProjectId": "8460173",
+            "openapiUrl": "http://40.example.test:18080/openapi.json",
+            "remark": "adapter-mvp on server 40",
+        }
+
+        with patch("app.apifox._find_project_config", return_value=project_config), patch(
+            "app.apifox._preflight_openapi", return_value={"ok": True, "pathCount": 1}
+        ) as preflight_openapi, patch(
+            "app.apifox._import_openapi", return_value={"statusCode": 201}
+        ) as import_openapi:
+            result = maybe_import_from_flow_event(payload)
+
+        preflight_openapi.assert_called_once_with("adapter-mvp", "http://payload.example.test/openapi.json")
+        import_openapi.assert_called_once()
+        self.assertTrue(result["imported"])
+        self.assertEqual(result["upstreamOpenapiUrl"], "http://payload.example.test/openapi.json")
+        parsed = urlparse(result["openapiUrl"])
+        self.assertEqual(f"{parsed.scheme}://{parsed.netloc}{parsed.path}", "http://adapter.example.test/adapter/openapi/adapter-mvp")
+        query = parse_qs(parsed.query)
+        self.assertEqual(query["upstreamUrl"][0], "http://payload.example.test/openapi.json")
+        self.assertEqual(
+            verify_signed_upstream_url("adapter-mvp", query["upstreamUrl"][0], query["signature"][0]),
+            "http://payload.example.test/openapi.json",
+        )
+
+    def test_fetch_sanitized_openapi_uses_db_project_openapi_url(self) -> None:
+        project_config = {
+            "projectName": "adapter-mvp",
+            "apifoxProjectId": "8460173",
+            "openapiUrl": "http://40.example.test:18080/openapi.json",
+        }
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "openapi": "3.0.1",
+                        "info": {"title": "Adapter MVP", "version": "1.0.0"},
+                        "paths": {"/adapter-mvp/health": {"get": {"summary": "health"}}},
+                    }
+                ).encode("utf-8")
+
+        with patch("app.apifox._find_project_config", return_value=project_config), patch(
+            "app.apifox.urllib.request.urlopen", return_value=FakeResponse()
+        ) as urlopen:
+            result = fetch_sanitized_openapi("adapter-mvp")
+
+        urlopen.assert_called_once()
+        self.assertEqual(urlopen.call_args.args[0], "http://40.example.test:18080/openapi.json")
+        self.assertIn("/health", result["paths"])
 
 
 if __name__ == "__main__":
