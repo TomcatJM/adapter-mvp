@@ -12,26 +12,27 @@ PIPELINE_FAILURE_FROM_STATUSES = {"CODE_SUBMITTED", "PIPELINE_RUNNING", "PIPELIN
 
 
 def handle_pipeline_success(payload: dict[str, Any], callback: YunxiaoPipelineFailureCallback) -> dict[str, Any]:
-    workflow_id = _workflow_id_from_payload(payload, callback)
-    if not workflow_id:
+    workflow, binding = _find_workflow_for_callback(payload, callback)
+    if not workflow:
+        if binding.get("reason") in {"workflow not found", "workflow match ambiguous"}:
+            return {
+                "workflow": {
+                    "bound": False,
+                    "workflowId": binding.get("workflowId"),
+                    "bindingSource": binding.get("source"),
+                    "reason": binding.get("reason"),
+                    "bindingAttempts": binding.get("attempts", []),
+                },
+                "apifox": {"enabled": False, "imported": False, "reason": binding.get("reason")},
+            }
         apifox = maybe_import_from_flow_event(payload)
         return {
             "workflow": {
                 "bound": False,
-                "reason": "missing WORKFLOW_ID",
+                "reason": "workflow not matched",
+                "bindingAttempts": binding.get("attempts", []),
             },
             "apifox": apifox,
-        }
-
-    workflow = db.find_workflow_instance(workflow_id)
-    if not workflow:
-        return {
-            "workflow": {
-                "bound": False,
-                "workflowId": workflow_id,
-                "reason": "workflow not found",
-            },
-            "apifox": {"enabled": False, "imported": False, "reason": "workflow not found"},
         }
 
     status = workflow["status"]
@@ -41,6 +42,7 @@ def handle_pipeline_success(payload: dict[str, Any], callback: YunxiaoPipelineFa
                 "bound": True,
                 "advanced": False,
                 "workflow": workflow,
+                "bindingSource": binding.get("source"),
                 "reason": "workflow already APIFOX_SYNCED",
             },
             "apifox": {"enabled": False, "imported": False, "reason": "workflow already APIFOX_SYNCED"},
@@ -51,6 +53,7 @@ def handle_pipeline_success(payload: dict[str, Any], callback: YunxiaoPipelineFa
                 "bound": True,
                 "advanced": False,
                 "workflow": workflow,
+                "bindingSource": binding.get("source"),
                 "reason": f"workflow status cannot accept pipeline success: {status}",
             },
             "apifox": {"enabled": False, "imported": False, "reason": "workflow status cannot accept pipeline success"},
@@ -75,6 +78,7 @@ def handle_pipeline_success(payload: dict[str, Any], callback: YunxiaoPipelineFa
                 "advanced": True,
                 "workflow": workflow,
                 "apifoxSynced": True,
+                "bindingSource": binding.get("source"),
             },
             "apifox": apifox,
         }
@@ -94,25 +98,21 @@ def handle_pipeline_success(payload: dict[str, Any], callback: YunxiaoPipelineFa
             "advanced": True,
             "workflow": workflow,
             "apifoxSynced": False,
+            "bindingSource": binding.get("source"),
         },
         "apifox": apifox,
     }
 
 
 def handle_pipeline_failure(callback: YunxiaoPipelineFailureCallback, analysis: dict[str, Any]) -> dict[str, Any]:
-    workflow_id = _workflow_id_from_callback(callback)
-    if not workflow_id:
-        return {
-            "bound": False,
-            "reason": "missing WORKFLOW_ID",
-        }
-
-    workflow = db.find_workflow_instance(workflow_id)
+    workflow, binding = _find_workflow_for_callback(callback.params, callback)
     if not workflow:
         return {
             "bound": False,
-            "workflowId": workflow_id,
-            "reason": "workflow not found",
+            "reason": binding.get("reason") or "workflow not matched",
+            "workflowId": binding.get("workflowId"),
+            "bindingSource": binding.get("source"),
+            "bindingAttempts": binding.get("attempts", []),
         }
 
     status = workflow["status"]
@@ -121,6 +121,7 @@ def handle_pipeline_failure(callback: YunxiaoPipelineFailureCallback, analysis: 
             "bound": True,
             "advanced": False,
             "workflow": workflow,
+            "bindingSource": binding.get("source"),
             "reason": "workflow already PIPELINE_FAILED",
         }
     if status not in PIPELINE_FAILURE_FROM_STATUSES:
@@ -128,6 +129,7 @@ def handle_pipeline_failure(callback: YunxiaoPipelineFailureCallback, analysis: 
             "bound": True,
             "advanced": False,
             "workflow": workflow,
+            "bindingSource": binding.get("source"),
             "reason": f"workflow status cannot accept pipeline failure: {status}",
         }
 
@@ -161,6 +163,7 @@ def handle_pipeline_failure(callback: YunxiaoPipelineFailureCallback, analysis: 
         "bound": True,
         "advanced": True,
         "workflow": updated,
+        "bindingSource": binding.get("source"),
     }
 
 
@@ -196,6 +199,90 @@ def _workflow_id_from_callback(callback: YunxiaoPipelineFailureCallback) -> str 
         or _pick(callback.params, "WORKFLOW_ID", "workflowId", "workflow_id")
         or _pick(_params_payload(callback.params), "WORKFLOW_ID", "workflowId", "workflow_id")
     )
+
+
+def _find_workflow_for_callback(
+    payload: dict[str, Any],
+    callback: YunxiaoPipelineFailureCallback,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    workflow_id = _workflow_id_from_payload(payload, callback)
+    if workflow_id:
+        workflow = db.find_workflow_instance(workflow_id)
+        return workflow, {
+            "source": "workflow_id",
+            "workflowId": workflow_id,
+            "reason": None if workflow else "workflow not found",
+        }
+
+    params = _params_payload(payload)
+    attempts: list[dict[str, Any]] = []
+
+    yunxiao_task_id = _clean_text(
+        _pick(
+            params,
+            "YUNXIAO_TASK_ID",
+            "yunxiaoTaskId",
+            "yunxiao_task_id",
+            "REQUIREMENT_ID",
+            "requirementId",
+            "requirement_id",
+            "workitemId",
+            "workitem_id",
+        )
+    )
+    if yunxiao_task_id:
+        attempts.append({"source": "yunxiao_task_id", "value": yunxiao_task_id})
+        workflow = _find_with_ambiguity_guard(
+            lambda: db.find_workflow_by_yunxiao_task_id(yunxiao_task_id),
+            "yunxiao_task_id",
+            attempts,
+        )
+        if isinstance(workflow, dict) and workflow.get("reason") == "workflow match ambiguous":
+            return None, workflow
+        if workflow:
+            return workflow, {"source": "yunxiao_task_id", "attempts": attempts}
+
+    pipeline_id = _clean_text(callback.pipeline_id)
+    build_number = _clean_text(callback.build_number)
+    if pipeline_id and build_number:
+        attempts.append({"source": "pipeline_build", "pipelineId": pipeline_id, "buildNumber": build_number})
+        workflow = _find_with_ambiguity_guard(
+            lambda: db.find_workflow_by_pipeline_build(pipeline_id, build_number),
+            "pipeline_build",
+            attempts,
+        )
+        if isinstance(workflow, dict) and workflow.get("reason") == "workflow match ambiguous":
+            return None, workflow
+        if workflow:
+            return workflow, {"source": "pipeline_build", "attempts": attempts}
+
+    branch_name = _clean_text(callback.branch_name)
+    commit_id = _clean_text(callback.commit_id)
+    if branch_name and commit_id:
+        attempts.append({"source": "branch_commit", "branchName": branch_name, "commitId": commit_id})
+        workflow = _find_with_ambiguity_guard(
+            lambda: db.find_workflow_by_branch_commit(branch_name, commit_id),
+            "branch_commit",
+            attempts,
+        )
+        if isinstance(workflow, dict) and workflow.get("reason") == "workflow match ambiguous":
+            return None, workflow
+        if workflow:
+            return workflow, {"source": "branch_commit", "attempts": attempts}
+
+    return None, {"source": None, "attempts": attempts, "reason": "workflow not matched"}
+
+
+def _find_with_ambiguity_guard(find: Any, source: str, attempts: list[dict[str, Any]]) -> dict[str, Any] | None:
+    try:
+        return find()
+    except db.WorkflowLookupAmbiguousError as exc:
+        return {
+            "source": source,
+            "attempts": attempts,
+            "reason": "workflow match ambiguous",
+            "error": str(exc),
+        }
 
 
 def _pipeline_context(callback: YunxiaoPipelineFailureCallback) -> dict[str, Any]:

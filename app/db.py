@@ -12,6 +12,10 @@ _schema_lock = Lock()
 _schema_ready = False
 
 
+class WorkflowLookupAmbiguousError(ValueError):
+    pass
+
+
 def configured() -> bool:
     return all(
         os.getenv(name)
@@ -549,10 +553,44 @@ def create_workflow_instance(
 def find_workflow_instance(workflow_id: str) -> dict[str, Any] | None:
     _require_configured()
     ensure_schema()
+    return _find_workflow_instance_by_clause("workflow_id = %s", (workflow_id,))
+
+
+def find_workflow_by_yunxiao_task_id(yunxiao_task_id: str) -> dict[str, Any] | None:
+    _require_configured()
+    ensure_schema()
+    if not yunxiao_task_id:
+        return None
+    return _find_workflow_instance_by_clause("yunxiao_task_id = %s", (yunxiao_task_id,))
+
+
+def find_workflow_by_pipeline_build(pipeline_id: str, build_number: str) -> dict[str, Any] | None:
+    _require_configured()
+    ensure_schema()
+    if not pipeline_id or not build_number:
+        return None
+    return _find_workflow_instance_by_clause(
+        "yunxiao_pipeline_id = %s AND yunxiao_build_number = %s",
+        (pipeline_id, build_number),
+    )
+
+
+def find_workflow_by_branch_commit(branch_name: str, commit_id: str) -> dict[str, Any] | None:
+    _require_configured()
+    ensure_schema()
+    if not branch_name or not commit_id:
+        return None
+    return _find_workflow_instance_by_clause(
+        "branch_name = %s AND commit_id = %s",
+        (branch_name, commit_id),
+    )
+
+
+def _find_workflow_instance_by_clause(where_clause: str, params: tuple[Any, ...]) -> dict[str, Any] | None:
     with connect() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                """
+                f"""
                 SELECT
                     workflow_id,
                     requirement_key,
@@ -573,13 +611,16 @@ def find_workflow_instance(workflow_id: str) -> dict[str, Any] | None:
                     created_at,
                     updated_at
                 FROM adapter_workflow_instance
-                WHERE workflow_id = %s
-                LIMIT 1
+                WHERE {where_clause}
+                ORDER BY updated_at DESC
+                LIMIT 2
                 """,
-                (workflow_id,),
+                params,
             )
-            row = cursor.fetchone()
-    return _map_workflow_instance(row) if row else None
+            rows = cursor.fetchall()
+    if len(rows) > 1:
+        raise WorkflowLookupAmbiguousError(f"Multiple workflow instances matched: {where_clause}")
+    return _map_workflow_instance(rows[0]) if rows else None
 
 
 def list_workflow_events(workflow_id: str, limit: int = 50) -> list[dict[str, Any]]:

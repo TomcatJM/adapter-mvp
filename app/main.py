@@ -456,8 +456,16 @@ def _normalize_flow_event(payload: dict[str, Any]) -> YunxiaoPipelineFailureCall
         stageName=str(_pick(task, "stageName", "stage_name", default="yunxiao-flow-event"))
         + "/"
         + str(_pick(task, "taskName", "task_name", default="unknown-task")),
-        branchName=_pick(source, "branchName", "branch_name", "branch"),
-        commitId=_pick(source, "commitId", "commit_id", "commit"),
+        branchName=(
+            _pick(source, "branchName", "branch_name", "branch")
+            or _pick(task, "branchName", "branch_name", "branch")
+            or _pick(params, "BRANCH_NAME", "branchName", "branch_name", "branch")
+        ),
+        commitId=(
+            _pick(source, "commitId", "commit_id", "commit")
+            or _pick(task, "commitId", "commit_id", "commit")
+            or _pick(params, "COMMIT_ID", "commitId", "commit_id", "commit")
+        ),
         operator=str(_pick(params, "BUILD_USER", "operator", "triggerUser", "trigger_user", "buildUser", "build_user", default="yunxiao")),
         exitCode=1,
         logTail=str(_pick(task, "message", "statusName", "status_name", default="")),
