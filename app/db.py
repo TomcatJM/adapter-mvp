@@ -761,6 +761,34 @@ def update_workflow_coding_requested(
     )
 
 
+def update_workflow_pipeline_running(
+    *,
+    workflow_id: str,
+    pipeline_id: str | None,
+    build_number: str | None,
+    branch_name: str | None,
+    commit_id: str | None,
+    context: dict[str, Any],
+    operator: str | None,
+    event_payload: dict[str, Any],
+) -> dict[str, Any]:
+    return _update_workflow_state(
+        workflow_id=workflow_id,
+        expected_status="CODE_SUBMITTED",
+        to_status="PIPELINE_RUNNING",
+        context=context,
+        operator=operator,
+        event_type="pipeline_running",
+        message="Yunxiao pipeline running",
+        event_payload=event_payload,
+        branch_name=branch_name,
+        commit_id=commit_id,
+        yunxiao_pipeline_id=pipeline_id,
+        yunxiao_build_number=build_number,
+        clear_error=True,
+    )
+
+
 def update_workflow_pipeline_success(
     *,
     workflow_id: str,

@@ -9,6 +9,7 @@ from app.models import YunxiaoPipelineFailureCallback
 
 PIPELINE_SUCCESS_FROM_STATUSES = {"CODE_SUBMITTED", "PIPELINE_RUNNING"}
 PIPELINE_FAILURE_FROM_STATUSES = {"CODE_SUBMITTED", "PIPELINE_RUNNING", "PIPELINE_SUCCESS"}
+PIPELINE_RUNNING_FROM_STATUSES = {"CODE_SUBMITTED"}
 
 
 def handle_pipeline_success(payload: dict[str, Any], callback: YunxiaoPipelineFailureCallback) -> dict[str, Any]:
@@ -101,6 +102,54 @@ def handle_pipeline_success(payload: dict[str, Any], callback: YunxiaoPipelineFa
             "bindingSource": binding.get("source"),
         },
         "apifox": apifox,
+    }
+
+
+def handle_pipeline_running(callback: YunxiaoPipelineFailureCallback) -> dict[str, Any]:
+    workflow, binding = _find_workflow_for_callback(callback.params, callback)
+    if not workflow:
+        return {
+            "bound": False,
+            "reason": binding.get("reason") or "workflow not matched",
+            "workflowId": binding.get("workflowId"),
+            "bindingSource": binding.get("source"),
+            "bindingAttempts": binding.get("attempts", []),
+        }
+
+    status = workflow["status"]
+    if status == "PIPELINE_RUNNING":
+        return {
+            "bound": True,
+            "advanced": False,
+            "workflow": workflow,
+            "bindingSource": binding.get("source"),
+            "reason": "workflow already PIPELINE_RUNNING",
+        }
+    if status not in PIPELINE_RUNNING_FROM_STATUSES:
+        return {
+            "bound": True,
+            "advanced": False,
+            "workflow": workflow,
+            "bindingSource": binding.get("source"),
+            "reason": f"workflow status cannot accept pipeline running: {status}",
+        }
+
+    context = _merge_context(workflow, {"pipeline": _pipeline_context(callback)})
+    updated = db.update_workflow_pipeline_running(
+        workflow_id=workflow["workflowId"],
+        pipeline_id=callback.pipeline_id,
+        build_number=callback.build_number,
+        branch_name=_clean_text(callback.branch_name),
+        commit_id=_clean_text(callback.commit_id),
+        context=context,
+        operator=callback.operator,
+        event_payload={"pipeline": _pipeline_context(callback)},
+    )
+    return {
+        "bound": True,
+        "advanced": True,
+        "workflow": updated,
+        "bindingSource": binding.get("source"),
     }
 
 

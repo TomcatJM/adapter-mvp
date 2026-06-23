@@ -39,7 +39,7 @@ from app.workflow import (
     submit_coding_result,
     submit_requirement,
 )
-from app.yunxiao_pipeline import handle_pipeline_failure, handle_pipeline_success
+from app.yunxiao_pipeline import handle_pipeline_failure, handle_pipeline_running, handle_pipeline_success
 
 
 OPENAPI_TAGS = [
@@ -55,6 +55,7 @@ app = FastAPI(title="Adapter MVP", version="0.1.0", openapi_tags=OPENAPI_TAGS)
 
 YUNXIAO_FLOW_EVENT_PATH = "/callbacks/yunxiao/flow-event"
 YUNXIAO_FLOW_EVENT_PUBLIC_PATH = "/callbacks/yunxiao/flow-event/public"
+YUNXIAO_RUNNING_STATUSES = {"RUNNING", "START", "STARTED", "IN_PROGRESS", "PROCESSING"}
 
 
 class DingTalkDocReadRequest(BaseModel):
@@ -395,6 +396,19 @@ def yunxiao_flow_event_public(payload: dict[str, Any]):
 
 def _handle_flow_event(payload: dict[str, Any]) -> dict[str, Any]:
     status_code = str(_pick(_task_payload(payload), "statusCode", "status_code", "status", default="")).upper()
+    if status_code in YUNXIAO_RUNNING_STATUSES:
+        callback = _normalize_flow_event(payload)
+        workflow = handle_pipeline_running(callback)
+        return {
+            "source": "yunxiao",
+            "mode": "flow_event",
+            "statusCode": status_code,
+            "taskId": callback.task_id,
+            "pipelineId": callback.pipeline_id,
+            "buildNumber": callback.build_number,
+            "stageName": callback.stage_name,
+            "workflow": workflow,
+        }
     if status_code in {"SUCCESS", "FINISH"}:
         callback = _normalize_flow_event(payload)
         result = handle_pipeline_success(payload, callback)

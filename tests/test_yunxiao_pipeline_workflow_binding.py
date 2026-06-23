@@ -11,6 +11,66 @@ except ModuleNotFoundError:
 
 @unittest.skipUnless(HAS_PYDANTIC, "pydantic is not installed")
 class YunxiaoPipelineWorkflowBindingTest(unittest.TestCase):
+    def test_running_with_workflow_id_marks_pipeline_running(self) -> None:
+        from app.models import YunxiaoPipelineFailureCallback
+        from app.yunxiao_pipeline import handle_pipeline_running
+
+        workflow = {"workflowId": "wf-test-1", "status": "CODE_SUBMITTED", "context": {}}
+        captured = {}
+
+        def fake_running(**kwargs):
+            captured.update(kwargs)
+            return {
+                **workflow,
+                "status": "PIPELINE_RUNNING",
+                "context": {"pipeline": {"pipelineId": kwargs["pipeline_id"], "buildNumber": kwargs["build_number"]}},
+            }
+
+        callback = YunxiaoPipelineFailureCallback(
+            taskId="rel-REQ-1-88",
+            workflowId="wf-test-1",
+            pipelineId="pipe-1",
+            buildNumber="88",
+            stageName="build",
+            branchName="feature/wf-test-1",
+            commitId="abc123",
+        )
+
+        with patch("app.yunxiao_pipeline.db.find_workflow_instance", return_value=workflow), patch(
+            "app.yunxiao_pipeline.db.update_workflow_pipeline_running", side_effect=fake_running
+        ):
+            result = handle_pipeline_running(callback)
+
+        self.assertTrue(result["bound"])
+        self.assertTrue(result["advanced"])
+        self.assertEqual(result["bindingSource"], "workflow_id")
+        self.assertEqual(result["workflow"]["status"], "PIPELINE_RUNNING")
+        self.assertEqual(captured["pipeline_id"], "pipe-1")
+        self.assertEqual(captured["build_number"], "88")
+
+    def test_running_with_existing_pipeline_running_is_idempotent(self) -> None:
+        from app.models import YunxiaoPipelineFailureCallback
+        from app.yunxiao_pipeline import handle_pipeline_running
+
+        workflow = {"workflowId": "wf-test-1", "status": "PIPELINE_RUNNING", "context": {}}
+        callback = YunxiaoPipelineFailureCallback(
+            taskId="rel-REQ-1-88",
+            workflowId="wf-test-1",
+            pipelineId="pipe-1",
+            buildNumber="88",
+            stageName="build",
+        )
+
+        with patch("app.yunxiao_pipeline.db.find_workflow_instance", return_value=workflow), patch(
+            "app.yunxiao_pipeline.db.update_workflow_pipeline_running"
+        ) as update_running:
+            result = handle_pipeline_running(callback)
+
+        update_running.assert_not_called()
+        self.assertTrue(result["bound"])
+        self.assertFalse(result["advanced"])
+        self.assertEqual(result["reason"], "workflow already PIPELINE_RUNNING")
+
     def test_success_with_workflow_id_marks_pipeline_success_and_apifox_synced(self) -> None:
         from app.models import YunxiaoPipelineFailureCallback
         from app.yunxiao_pipeline import handle_pipeline_success
@@ -318,6 +378,37 @@ class YunxiaoPipelineWorkflowBindingTest(unittest.TestCase):
         self.assertEqual(callback.branch_name, "feature/wf-test-1")
         self.assertEqual(callback.commit_id, "abc123")
         self.assertEqual(callback.operator, "tester")
+
+    def test_flow_event_running_status_advances_workflow(self) -> None:
+        from app.main import _handle_flow_event
+
+        callback_result = {
+            "bound": True,
+            "advanced": True,
+            "bindingSource": "workflow_id",
+            "workflow": {"workflowId": "wf-test-1", "status": "PIPELINE_RUNNING"},
+        }
+
+        with patch("app.main.handle_pipeline_running", return_value=callback_result):
+            result = _handle_flow_event(
+                {
+                    "task": {
+                        "statusCode": "RUNNING",
+                        "pipelineId": "pipe-1",
+                        "buildNumber": "88",
+                        "stageName": "build",
+                        "taskName": "compile",
+                    },
+                    "globalParams": [
+                        {"key": "WORKFLOW_ID", "value": "wf-test-1"},
+                        {"key": "TASK_ID", "value": "rel-REQ-1-88"},
+                    ],
+                }
+            )
+
+        self.assertEqual(result["mode"], "flow_event")
+        self.assertEqual(result["statusCode"], "RUNNING")
+        self.assertEqual(result["workflow"]["workflow"]["status"], "PIPELINE_RUNNING")
 
 
 if __name__ == "__main__":
