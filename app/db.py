@@ -1019,6 +1019,69 @@ def resolve_workflow_needs_human(
     return workflow
 
 
+def retry_workflow_from_pipeline_failed(
+    *,
+    workflow_id: str,
+    target_status: str,
+    operator: str | None,
+    reason: str | None,
+    max_retry_count: int,
+    event_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    _require_configured()
+    ensure_schema()
+    clipped_reason = str(reason or "Workflow retry requested")[:1024]
+    with connect() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT status, retry_count
+                FROM adapter_workflow_instance
+                WHERE workflow_id = %s
+                FOR UPDATE
+                """,
+                (workflow_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise ValueError(f"Workflow not found: {workflow_id}")
+            current_status = str(row.get("status") or "")
+            if current_status != "PIPELINE_FAILED":
+                raise ValueError(f"Workflow status is not PIPELINE_FAILED: {workflow_id}")
+            retry_count = int(row.get("retry_count") or 0)
+            if retry_count >= max_retry_count:
+                raise ValueError(
+                    f"Workflow retry count exceeded limit: {workflow_id} ({retry_count}/{max_retry_count})"
+                )
+            cursor.execute(
+                """
+                UPDATE adapter_workflow_instance
+                SET status = %s,
+                    last_error = NULL,
+                    retry_count = retry_count + 1
+                WHERE workflow_id = %s
+                  AND status = 'PIPELINE_FAILED'
+                """,
+                (target_status, workflow_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError(f"Workflow status is not PIPELINE_FAILED: {workflow_id}")
+            _insert_workflow_event(
+                cursor,
+                workflow_id=workflow_id,
+                event_type="workflow_retried",
+                from_status="PIPELINE_FAILED",
+                to_status=target_status,
+                operator=operator,
+                message=clipped_reason,
+                payload=event_payload or {},
+            )
+    workflow = find_workflow_instance(workflow_id)
+    if not workflow:
+        raise ValueError(f"Workflow not found: {workflow_id}")
+    return workflow
+
+
 def mark_workflow_failed(
     *,
     workflow_id: str,

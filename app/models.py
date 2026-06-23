@@ -101,6 +101,15 @@ class WorkflowResolveRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class WorkflowRetryRequest(BaseModel):
+    operator: str = "codex"
+    target_status: str = Field(default="CODING_REQUESTED", alias="targetStatus")
+    reason: str | None = None
+    max_retry_count: int = Field(default=3, alias="maxRetryCount", ge=1, le=10)
+
+    model_config = {"populate_by_name": True}
+
+
 class WorkflowRequirementRequest(BaseModel):
     operator: str = "codex"
     summary: str

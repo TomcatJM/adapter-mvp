@@ -214,6 +214,88 @@ class WorkflowP0Test(unittest.TestCase):
         db_resolve.assert_not_called()
         self.assertIn("Unsupported resolve targetStatus", str(raised.exception))
 
+    def test_retry_pipeline_failed_to_coding_requested(self) -> None:
+        from app.models import WorkflowRetryRequest
+        from app.workflow import retry_workflow
+
+        workflow = {
+            "workflowId": "wf-test-1",
+            "status": "PIPELINE_FAILED",
+            "context": {},
+            "lastError": "unit test failed",
+            "retryCount": 1,
+        }
+        captured = {}
+
+        def fake_retry(**kwargs):
+            captured.update(kwargs)
+            return {**workflow, "status": kwargs["target_status"], "lastError": None, "retryCount": 2}
+
+        with patch("app.workflow.db.find_workflow_instance", return_value=workflow), patch(
+            "app.workflow.db.retry_workflow_from_pipeline_failed", side_effect=fake_retry
+        ):
+            result = retry_workflow(
+                "wf-test-1",
+                WorkflowRetryRequest(operator="codex", reason="fix flaky test", maxRetryCount=3),
+            )
+
+        self.assertTrue(result["retried"])
+        self.assertEqual(result["workflow"]["status"], "CODING_REQUESTED")
+        self.assertEqual(captured["target_status"], "CODING_REQUESTED")
+        self.assertEqual(captured["max_retry_count"], 3)
+        self.assertIn("coding-result", result["nextAction"])
+
+    def test_retry_rejects_non_pipeline_failed_status(self) -> None:
+        from app.models import WorkflowRetryRequest
+        from app.workflow import WorkflowError, retry_workflow
+
+        workflow = {"workflowId": "wf-test-1", "status": "NEEDS_HUMAN", "context": {}, "retryCount": 1}
+
+        with patch("app.workflow.db.find_workflow_instance", return_value=workflow), patch(
+            "app.workflow.db.retry_workflow_from_pipeline_failed"
+        ) as db_retry:
+            with self.assertRaises(WorkflowError) as raised:
+                retry_workflow("wf-test-1", WorkflowRetryRequest(operator="codex", reason="try again"))
+
+        db_retry.assert_not_called()
+        self.assertIn("Workflow status is not PIPELINE_FAILED", str(raised.exception))
+
+    def test_retry_rejects_when_retry_count_exceeds_limit(self) -> None:
+        from app.models import WorkflowRetryRequest
+        from app.workflow import WorkflowError, retry_workflow
+
+        workflow = {"workflowId": "wf-test-1", "status": "PIPELINE_FAILED", "context": {}, "retryCount": 3}
+
+        with patch("app.workflow.db.find_workflow_instance", return_value=workflow), patch(
+            "app.workflow.db.retry_workflow_from_pipeline_failed"
+        ) as db_retry:
+            with self.assertRaises(WorkflowError) as raised:
+                retry_workflow(
+                    "wf-test-1",
+                    WorkflowRetryRequest(operator="codex", reason="retry limit", maxRetryCount=3),
+                )
+
+        db_retry.assert_not_called()
+        self.assertIn("retry count exceeded limit", str(raised.exception))
+
+    def test_retry_rejects_unsupported_target_status(self) -> None:
+        from app.models import WorkflowRetryRequest
+        from app.workflow import WorkflowError, retry_workflow
+
+        workflow = {"workflowId": "wf-test-1", "status": "PIPELINE_FAILED", "context": {}, "retryCount": 1}
+
+        with patch("app.workflow.db.find_workflow_instance", return_value=workflow), patch(
+            "app.workflow.db.retry_workflow_from_pipeline_failed"
+        ) as db_retry:
+            with self.assertRaises(WorkflowError) as raised:
+                retry_workflow(
+                    "wf-test-1",
+                    WorkflowRetryRequest(operator="codex", targetStatus="PIPELINE_SUCCESS", reason="bad target"),
+                )
+
+        db_retry.assert_not_called()
+        self.assertIn("Unsupported retry targetStatus", str(raised.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

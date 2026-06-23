@@ -10,6 +10,7 @@ from app.models import (
     WorkflowCodingResultRequest,
     WorkflowRequirementRequest,
     WorkflowResolveRequest,
+    WorkflowRetryRequest,
     WorkflowStartRequest,
 )
 from app.yunxiao import YunxiaoError, close_yunxiao_workitem, create_yunxiao_workitem
@@ -20,6 +21,7 @@ class WorkflowError(RuntimeError):
 
 
 RESOLVABLE_TARGET_STATUSES = {"APIFOX_SYNCED", "PIPELINE_SUCCESS", "CODING_REQUESTED"}
+RETRYABLE_TARGET_STATUSES = {"CODING_REQUESTED"}
 
 
 def start_workflow(request: WorkflowStartRequest) -> dict[str, Any]:
@@ -105,6 +107,43 @@ def resolve_workflow(workflow_id: str, request: WorkflowResolveRequest) -> dict[
         "workflow": resolved,
         "resolved": True,
         "nextAction": _resolve_next_action(target_status),
+    }
+
+
+def retry_workflow(workflow_id: str, request: WorkflowRetryRequest) -> dict[str, Any]:
+    workflow = _load_workflow(workflow_id)
+    if workflow["status"] != "PIPELINE_FAILED":
+        raise WorkflowError(f"Workflow status is not PIPELINE_FAILED: {workflow['status']}")
+    target_status = _clean_text(request.target_status)
+    if target_status not in RETRYABLE_TARGET_STATUSES:
+        allowed = ", ".join(sorted(RETRYABLE_TARGET_STATUSES))
+        raise WorkflowError(f"Unsupported retry targetStatus: {target_status}. Allowed: {allowed}")
+    retry_count = int(workflow.get("retryCount") or 0)
+    if retry_count >= request.max_retry_count:
+        raise WorkflowError(
+            f"Workflow retry count exceeded limit: {workflow_id} ({retry_count}/{request.max_retry_count})"
+        )
+
+    reason = _clean_text(request.reason) or "Pipeline failure confirmed, retry coding from CODING_REQUESTED"
+    retried = db.retry_workflow_from_pipeline_failed(
+        workflow_id=workflow_id,
+        target_status=target_status,
+        operator=_clean_text(request.operator),
+        reason=reason,
+        max_retry_count=request.max_retry_count,
+        event_payload={
+            "targetStatus": target_status,
+            "reason": reason,
+            "maxRetryCount": request.max_retry_count,
+            "previousRetryCount": retry_count,
+        },
+    )
+    return {
+        "workflow": retried,
+        "retried": True,
+        "fromStatus": "PIPELINE_FAILED",
+        "targetStatus": target_status,
+        "nextAction": _retry_next_action(target_status),
     }
 
 
@@ -413,6 +452,12 @@ def _resolve_next_action(target_status: str) -> str:
         return "retry Apifox sync through Yunxiao flow-event callback"
     if target_status == "CODING_REQUESTED":
         return "continue coding and POST /workflow/{workflow_id}/coding-result"
+    return "inspect workflow and continue manually"
+
+
+def _retry_next_action(target_status: str) -> str:
+    if target_status == "CODING_REQUESTED":
+        return "Codex should repair the failure and POST /workflow/{workflow_id}/coding-result"
     return "inspect workflow and continue manually"
 
 
