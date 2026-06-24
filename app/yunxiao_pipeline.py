@@ -18,6 +18,41 @@ PIPELINE_RUNNING_BINDING_STATUSES = {*PIPELINE_RUNNING_FROM_STATUSES}
 PIPELINE_FAILURE_BINDING_STATUSES = {*PIPELINE_FAILURE_FROM_STATUSES}
 PROJECT_BINDING_LIMIT = 50
 IDENTIFIER_RE = r"([A-Za-z0-9][A-Za-z0-9_.:-]{1,127})"
+YUNXIAO_TASK_ALIASES = (
+    "YUNXIAO_TASK_ID",
+    "YUNXIAO_TASK_DISPLAY_ID",
+    "YUNXIAO_DISPLAY_ID",
+    "YUNXIAO_WORKITEM_ID",
+    "YUNXIAO_WORKITEM_DISPLAY_ID",
+    "WORKITEM_ID",
+    "WORKITEM_DISPLAY_ID",
+    "REQUIREMENT_ID",
+    "TASK_ID",
+)
+YUNXIAO_TASK_COMMIT_ALIASES = (
+    *YUNXIAO_TASK_ALIASES,
+    "yunxiaoTaskId",
+    "yunxiaoTaskDisplayId",
+    "yunxiao_task_id",
+    "yunxiao_task_display_id",
+)
+YUNXIAO_TASK_CHINESE_ALIASES = (
+    "云效任务ID",
+    "云效任务编号",
+    "云效任务展示ID",
+    "云效任务显示ID",
+    "云效任务页面ID",
+    "云效展示ID",
+    "云效页面ID",
+    "云效显示ID",
+    "云效工作项ID",
+    "云效工作项展示ID",
+    "云效工作项显示ID",
+    "云效工作项页面ID",
+    "任务编号",
+)
+YUNXIAO_TASK_COMMIT_ALIAS_RE = "|".join(re.escape(alias) for alias in YUNXIAO_TASK_COMMIT_ALIASES)
+YUNXIAO_TASK_CHINESE_ALIAS_RE = "|".join(re.escape(alias) for alias in YUNXIAO_TASK_CHINESE_ALIASES)
 COMMIT_WORKFLOW_PATTERNS = (
     re.compile(rf"(?im)^\s*(?:WORKFLOW_ID|WORKFLOWID|workflowId|workflow_id)\s*[:=：]\s*{IDENTIFIER_RE}\b"),
     re.compile(rf"(?m)^\s*(?:工作流ID|工作流编号)\s*[:=：]\s*{IDENTIFIER_RE}\b"),
@@ -25,14 +60,10 @@ COMMIT_WORKFLOW_PATTERNS = (
     re.compile(rf"(?:^|[\s,;，；])(?:工作流ID|工作流编号)\s*[:=：]\s*{IDENTIFIER_RE}\b"),
 )
 COMMIT_YUNXIAO_TASK_PATTERNS = (
-    re.compile(
-        rf"(?im)^\s*(?:YUNXIAO_TASK_ID|YUNXIAO_WORKITEM_ID|WORKITEM_ID|REQUIREMENT_ID|TASK_ID)\s*[:=：]\s*{IDENTIFIER_RE}\b"
-    ),
-    re.compile(rf"(?m)^\s*(?:云效任务ID|云效任务编号|云效工作项ID|任务编号)\s*[:=：]\s*{IDENTIFIER_RE}\b"),
-    re.compile(
-        rf"(?i)(?:^|[\s,;，；])(?:YUNXIAO_TASK_ID|YUNXIAO_WORKITEM_ID|WORKITEM_ID|REQUIREMENT_ID|TASK_ID)\s*[:=：]\s*{IDENTIFIER_RE}\b"
-    ),
-    re.compile(rf"(?:^|[\s,;，；])(?:云效任务ID|云效任务编号|云效工作项ID|任务编号)\s*[:=：]\s*{IDENTIFIER_RE}\b"),
+    re.compile(rf"(?im)^\s*(?:{YUNXIAO_TASK_COMMIT_ALIAS_RE})\s*[:=：]\s*{IDENTIFIER_RE}\b"),
+    re.compile(rf"(?m)^\s*(?:{YUNXIAO_TASK_CHINESE_ALIAS_RE})\s*[:=：]\s*{IDENTIFIER_RE}\b"),
+    re.compile(rf"(?i)(?:^|[\s,;，；])(?:{YUNXIAO_TASK_COMMIT_ALIAS_RE})\s*[:=：]\s*{IDENTIFIER_RE}\b"),
+    re.compile(rf"(?:^|[\s,;，；])(?:{YUNXIAO_TASK_CHINESE_ALIAS_RE})\s*[:=：]\s*{IDENTIFIER_RE}\b"),
 )
 
 
@@ -296,13 +327,20 @@ def _find_workflow_for_callback(
         _pick(
             params,
             "YUNXIAO_TASK_ID",
+            "YUNXIAO_TASK_DISPLAY_ID",
+            "YUNXIAO_DISPLAY_ID",
+            "YUNXIAO_WORKITEM_DISPLAY_ID",
             "yunxiaoTaskId",
+            "yunxiaoTaskDisplayId",
             "yunxiao_task_id",
+            "yunxiao_task_display_id",
             "REQUIREMENT_ID",
             "requirementId",
             "requirement_id",
             "workitemId",
+            "workitemDisplayId",
             "workitem_id",
+            "workitem_display_id",
         )
     )
     if yunxiao_task_id:

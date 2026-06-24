@@ -39,6 +39,6 @@
 
 - 真实云效 Webhook 的代码源信息会放在 `sources[0].data`，不能只读 `sources[0]`。
 - 云效提交说明字段可能是 URL 编码的 JSON 字符串，也可能只出现在 `CI_COMMIT_TITLE`；Adapter 必须统一解码后再解析任务编号。
-- 提交说明中放 `YUNXIAO_TASK_ID=<页面展示ID>` 可以稳定绑定 workflow，真实绑定来源为 `commit_message_yunxiao_task_id`；内部 `workitemIdentifier` 仍兼容。
-- 标准提交标题推荐：`feat: <说明> YUNXIAO_TASK_ID=VEGZ-1186`；如果标题放不下，可在正文单独一行写 `云效任务ID：VEGZ-1186`。
+- 提交说明中放 `YUNXIAO_TASK_DISPLAY_ID=<页面展示ID>` 可以稳定绑定 workflow，真实绑定来源仍为 `commit_message_yunxiao_task_id`；旧 `YUNXIAO_TASK_ID` 和内部 `workitemIdentifier` 仍兼容。
+- 标准提交标题推荐：`feat: <说明> YUNXIAO_TASK_DISPLAY_ID=VEGZ-1186`；如果标题放不下，可在正文单独一行写 `云效展示ID：VEGZ-1186`。
 - 最新真实闭环 `wf-e7569729c0c84761` 已最终进入 `YUNXIAO_TASK_CLOSED`，说明从钉钉需求到云效关单这条主线已经闭环。

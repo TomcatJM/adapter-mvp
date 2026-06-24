@@ -38,7 +38,7 @@ APIFOX_SYNCED -> YUNXIAO_TASK_CLOSED
 - Apifox OpenAPI 来源按 payload、项目表 `openapi_url`、项目环境变量、全局环境变量、全局模板逐级解析；单项目不走统一网关时只补项目表，不改全局模板。
 - Apifox 的 `pipelineId -> projectName` 可自动发现，但只允许匹配已有 `adapter_apifox_project_config.project_name`；无法唯一匹配时继续显式失败，避免推错项目。
 - `pipelineId -> projectName` 只能用于项目级 workflow 兜底绑定；只有同项目唯一活跃 workflow 时才推进，多个候选时返回 `workflow match ambiguous`。
-- 标准提交说明优先把页面展示 ID 放进 `YUNXIAO_TASK_ID`，例如 `YUNXIAO_TASK_ID=VEGZ-1186`；内部 `workitemIdentifier` 仍兼容，真实闭环已验证 `commit_message_yunxiao_task_id` 可以绑定 workflow。
+- 标准提交说明优先把页面展示 ID 放进 `YUNXIAO_TASK_DISPLAY_ID`，例如 `YUNXIAO_TASK_DISPLAY_ID=VEGZ-1186`；旧 `YUNXIAO_TASK_ID` 仍兼容页面展示 ID 和内部 `workitemIdentifier`，真实闭环已验证 `commit_message_yunxiao_task_id` 可以绑定 workflow。
 
 ## Errors Encountered
 
