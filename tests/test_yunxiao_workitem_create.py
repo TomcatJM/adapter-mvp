@@ -38,6 +38,7 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
             result = create_yunxiao_workitem(workflow, "codex")
 
         self.assertEqual(result["workitemIdentifier"], "YX-1")
+        self.assertIsNone(result["workitemDisplayId"])
         self.assertEqual(captured["path"], "/organization/org-1/workitem")
         self.assertEqual(captured["action"], "CreateWorkitemV2")
         payload = captured["payload"]
@@ -179,10 +180,12 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
         from app.yunxiao import create_yunxiao_workitem
 
         workflow = _workflow()
-        captured = {}
+        captured = []
 
         def fake_request(**kwargs):
-            captured.update(kwargs)
+            captured.append(kwargs)
+            if kwargs["method"] == "GET":
+                return {"success": True, "id": "YX-PAT-1", "serialNumber": "VEGZ-1186"}
             return {"success": True, "identifier": "YX-PAT-1"}
 
         with patch.dict(os.environ, {}, clear=True), patch("app.yunxiao.db.configured", return_value=True), patch(
@@ -215,17 +218,19 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
         ) as acs_request:
             result = create_yunxiao_workitem(workflow, "codex")
 
-        pat_request.assert_called_once()
+        self.assertEqual(pat_request.call_count, 2)
         acs_request.assert_not_called()
         self.assertEqual(result["workitemIdentifier"], "YX-PAT-1")
+        self.assertEqual(result["workitemDisplayId"], "VEGZ-1186")
         self.assertEqual(result["authType"], "personal_token")
-        self.assertEqual(captured["method"], "POST")
-        self.assertEqual(captured["path"], "/oapi/v1/projex/organizations/org-pat/workitems")
-        self.assertEqual(captured["payload"]["spaceId"], "project-pat")
-        self.assertEqual(captured["payload"]["workitemTypeId"], "type-pat")
-        self.assertNotIn("spaceIdentifier", captured["payload"])
-        self.assertNotIn("workitemTypeIdentifier", captured["payload"])
-        self.assertEqual(captured["config"]["personalToken"], "pat-secret")
+        self.assertEqual([item["method"] for item in captured], ["POST", "GET"])
+        self.assertEqual(captured[0]["path"], "/oapi/v1/projex/organizations/org-pat/workitems")
+        self.assertEqual(captured[0]["payload"]["spaceId"], "project-pat")
+        self.assertEqual(captured[0]["payload"]["workitemTypeId"], "type-pat")
+        self.assertNotIn("spaceIdentifier", captured[0]["payload"])
+        self.assertNotIn("workitemTypeIdentifier", captured[0]["payload"])
+        self.assertEqual(captured[0]["config"]["personalToken"], "pat-secret")
+        self.assertEqual(captured[1]["path"], "/oapi/v1/projex/organizations/org-pat/workitems/YX-PAT-1")
 
     def test_create_workitem_uses_default_project_member_before_legacy_default_assignee(self) -> None:
         from app.yunxiao import create_yunxiao_workitem
@@ -526,6 +531,7 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
             "app.workflow.create_yunxiao_workitem",
             return_value={
                 "workitemIdentifier": "YX-1",
+                "workitemDisplayId": "VEGZ-1186",
                 "requestId": "req-1",
                 "projectId": "project-1",
                 "category": "Req",
@@ -540,9 +546,12 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
         self.assertTrue(result["advanced"])
         self.assertEqual(result["workflow"]["status"], "CODING_REQUESTED")
         self.assertEqual(result["workflow"]["yunxiaoTaskId"], "YX-1")
+        self.assertEqual(result["yunxiao"]["workitemDisplayId"], "VEGZ-1186")
         self.assertEqual(captured["created"]["from_status"], "REQUIREMENT_PARSED")
         self.assertEqual(captured["created"]["yunxiao_task_id"], "YX-1")
+        self.assertEqual(captured["created"]["event_payload"]["yunxiaoTaskDisplayId"], "VEGZ-1186")
         self.assertEqual(captured["coding"]["event_payload"]["yunxiaoTaskId"], "YX-1")
+        self.assertEqual(captured["coding"]["event_payload"]["yunxiaoTaskDisplayId"], "VEGZ-1186")
 
     def test_advance_requirement_parsed_with_existing_workitem_skips_creation(self) -> None:
         from app.models import WorkflowAdvanceRequest

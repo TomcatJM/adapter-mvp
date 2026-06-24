@@ -213,6 +213,7 @@ class YunxiaoWorkitemCloseTest(unittest.TestCase):
             "app.workflow.close_yunxiao_workitem",
             return_value={
                 "workitemIdentifier": "YX-1",
+                "workitemDisplayId": "VEGZ-1186",
                 "alreadyClosed": False,
                 "closedStatus": "done",
                 "closedStatusName": "已完成",
@@ -226,7 +227,9 @@ class YunxiaoWorkitemCloseTest(unittest.TestCase):
         self.assertEqual(result["workflow"]["status"], "YUNXIAO_TASK_CLOSED")
         self.assertEqual(captured["event_type"], "yunxiao_workitem_closed")
         self.assertEqual(captured["event_payload"]["yunxiaoTaskId"], "YX-1")
+        self.assertEqual(captured["event_payload"]["yunxiaoTaskDisplayId"], "VEGZ-1186")
         self.assertEqual(captured["event_payload"]["writeback"], "success")
+        self.assertEqual(captured["context"]["yunxiao"]["closeResult"]["workitemDisplayId"], "VEGZ-1186")
         self.assertEqual(captured["context"]["yunxiao"]["closeResult"]["closedStatus"], "done")
 
     def test_advance_apifox_synced_compensates_already_closed_workitem(self) -> None:

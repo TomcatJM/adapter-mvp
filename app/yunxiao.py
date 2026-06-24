@@ -61,8 +61,12 @@ def create_yunxiao_workitem(workflow: dict[str, Any], operator: str | None = Non
     workitem_id = _extract_workitem_identifier(response)
     if not workitem_id:
         raise YunxiaoError(f"Yunxiao create workitem failed: {_response_error(response)}")
+    workitem_display_id = _extract_workitem_display_id(response)
+    if not workitem_display_id and config.get("authType") == "personal_token":
+        workitem_display_id = _fetch_workitem_display_id_after_create(workitem_id, config)
     return {
         "workitemIdentifier": workitem_id,
+        "workitemDisplayId": workitem_display_id,
         "requestId": _pick(response, "requestId", "RequestId"),
         "projectId": config["projectId"],
         "projectName": config.get("projectName"),
@@ -101,6 +105,7 @@ def close_yunxiao_workitem(workflow: dict[str, Any], operator: str | None = None
     if _is_workitem_closed(current, config):
         return {
             "workitemIdentifier": workitem_id,
+            "workitemDisplayId": _extract_workitem_display_id(current),
             "alreadyClosed": True,
             "closedStatus": _extract_status_identifier(current),
             "closedStatusName": _extract_status_name(current),
@@ -122,6 +127,7 @@ def close_yunxiao_workitem(workflow: dict[str, Any], operator: str | None = None
         )
     return {
         "workitemIdentifier": workitem_id,
+        "workitemDisplayId": _extract_workitem_display_id(after),
         "alreadyClosed": False,
         "closedStatus": _extract_status_identifier(after) or config.get("doneStatusId"),
         "closedStatusName": _extract_status_name(after),
@@ -266,10 +272,11 @@ def build_close_writeback_content(workflow: dict[str, Any], operator: str | None
     pipeline = context.get("pipeline") if isinstance(context.get("pipeline"), dict) else {}
     apifox = context.get("apifox") if isinstance(context.get("apifox"), dict) else {}
     apifox_result = apifox.get("lastResult") if isinstance(apifox.get("lastResult"), dict) else apifox
+    workitem_display_id = _workflow_workitem_display_id(workflow)
     lines = [
         "【Adapter 交付回写】",
         f"Workflow：{workflow.get('workflowId') or ''}",
-        f"云效工作项：{workflow.get('yunxiaoTaskId') or ''}",
+        f"云效工作项：{workitem_display_id or workflow.get('yunxiaoTaskId') or ''}",
         f"流水线：{workflow.get('yunxiaoPipelineId') or pipeline.get('pipelineId') or ''}/{workflow.get('yunxiaoBuildNumber') or pipeline.get('buildNumber') or ''}",
         f"分支：{workflow.get('branchName') or pipeline.get('branchName') or coding_result.get('branchName') or ''}",
         f"提交：{workflow.get('commitId') or pipeline.get('commitId') or coding_result.get('commitId') or ''}",
@@ -280,6 +287,21 @@ def build_close_writeback_content(workflow: dict[str, Any], operator: str | None
         f"操作人：{operator or ''}",
     ]
     return _clip(_sanitize("\n".join(lines)), 6000)
+
+
+def _workflow_workitem_display_id(workflow: dict[str, Any]) -> str | None:
+    context = workflow.get("context") if isinstance(workflow.get("context"), dict) else {}
+    yunxiao = context.get("yunxiao") if isinstance(context.get("yunxiao"), dict) else {}
+    for source in (
+        workflow,
+        yunxiao.get("createResult") if isinstance(yunxiao.get("createResult"), dict) else {},
+        yunxiao.get("closeResult") if isinstance(yunxiao.get("closeResult"), dict) else {},
+        context.get("codingRequest") if isinstance(context.get("codingRequest"), dict) else {},
+    ):
+        value = _clean_text((source or {}).get("yunxiaoTaskDisplayId") or (source or {}).get("workitemDisplayId"))
+        if value:
+            return value
+    return None
 
 
 def build_create_workitem_payload(
@@ -900,6 +922,39 @@ def _extract_workitem_identifier(response: Any) -> str | None:
         if text and (success is None or _is_success(success)):
             return text
     return None
+
+
+def _fetch_workitem_display_id_after_create(workitem_id: str, config: dict[str, Any]) -> str | None:
+    try:
+        detail = get_yunxiao_workitem(workitem_id, config)
+    except YunxiaoError:
+        return None
+    return _extract_workitem_display_id(detail)
+
+
+def _extract_workitem_display_id(response: Any) -> str | None:
+    display_keys = (
+        "workitemDisplayId",
+        "yunxiaoTaskDisplayId",
+        "serialNumber",
+        "serialNo",
+        "serialId",
+        "displayId",
+        "displayID",
+        "displayIdentifier",
+        "displayValue",
+        "workitemSerialNumber",
+    )
+    for source in _dict_candidates(response):
+        for key in display_keys:
+            value = _clean_text(source.get(key))
+            if value and _looks_like_display_workitem_id(value):
+                return value
+    return None
+
+
+def _looks_like_display_workitem_id(value: str) -> bool:
+    return bool(re.fullmatch(r"[A-Z][A-Z0-9]{1,15}-\d{1,10}", value.strip()))
 
 
 def _extract_status_identifier(response: Any) -> str | None:

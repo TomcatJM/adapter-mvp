@@ -308,7 +308,7 @@ def _find_workflow_for_callback(
     if yunxiao_task_id:
         attempts.append({"source": "yunxiao_task_id", "value": yunxiao_task_id})
         workflow = _find_with_ambiguity_guard(
-            lambda: db.find_workflow_by_yunxiao_task_id(yunxiao_task_id),
+            lambda: _find_workflow_by_yunxiao_reference(yunxiao_task_id, project_binding_statuses),
             "yunxiao_task_id",
             attempts,
         )
@@ -332,7 +332,7 @@ def _find_workflow_for_callback(
     if commit_yunxiao_task_id:
         attempts.append({"source": "commit_message_yunxiao_task_id", "value": commit_yunxiao_task_id})
         workflow = _find_with_ambiguity_guard(
-            lambda: db.find_workflow_by_yunxiao_task_id(commit_yunxiao_task_id),
+            lambda: _find_workflow_by_yunxiao_reference(commit_yunxiao_task_id, project_binding_statuses),
             "commit_message_yunxiao_task_id",
             attempts,
         )
@@ -410,6 +410,56 @@ def _project_name_from_pipeline_config(pipeline_id: str) -> str | None:
     return _clean_text(discovery.get("projectName")) if discovery.get("matched") else None
 
 
+def _find_workflow_by_yunxiao_reference(value: str, statuses: set[str]) -> dict[str, Any] | None:
+    workflow = db.find_workflow_by_yunxiao_task_id(value)
+    if workflow:
+        return workflow
+    return _find_workflow_by_yunxiao_display_id(value, statuses)
+
+
+def _find_workflow_by_yunxiao_display_id(value: str, statuses: set[str]) -> dict[str, Any] | None:
+    target = _normalize_identifier(value)
+    if not target:
+        return None
+    candidates = [
+        workflow
+        for workflow in db.list_workflows_by_statuses(statuses, limit=PROJECT_BINDING_LIMIT)
+        if target in {_normalize_identifier(item) for item in _workflow_yunxiao_reference_candidates(workflow)}
+    ]
+    if len(candidates) > 1:
+        workflow_ids = ", ".join(str(item.get("workflowId")) for item in candidates[:5])
+        raise db.WorkflowLookupAmbiguousError(
+            f"Multiple active workflow instances matched Yunxiao display id={value}: {workflow_ids}"
+        )
+    return candidates[0] if candidates else None
+
+
+def _workflow_yunxiao_reference_candidates(workflow: dict[str, Any]) -> list[str]:
+    context = workflow.get("context") if isinstance(workflow.get("context"), dict) else {}
+    yunxiao = context.get("yunxiao") if isinstance(context.get("yunxiao"), dict) else {}
+    values: list[Any] = [
+        workflow.get("yunxiaoTaskId"),
+        workflow.get("yunxiaoTaskDisplayId"),
+    ]
+    for source in (
+        yunxiao.get("createResult") if isinstance(yunxiao.get("createResult"), dict) else {},
+        yunxiao.get("closeResult") if isinstance(yunxiao.get("closeResult"), dict) else {},
+        context.get("codingRequest") if isinstance(context.get("codingRequest"), dict) else {},
+    ):
+        values.extend(
+            source.get(key)
+            for key in (
+                "yunxiaoTaskId",
+                "yunxiaoTaskDisplayId",
+                "workitemIdentifier",
+                "workitemDisplayId",
+                "serialNumber",
+                "serialNo",
+            )
+        )
+    return [text for text in (_clean_text(value) for value in values) if text]
+
+
 def _find_active_workflow_by_project(project_name: str, statuses: set[str]) -> dict[str, Any] | None:
     project_aliases = _project_aliases(project_name)
     candidates = [
@@ -467,6 +517,11 @@ def _workflow_project_candidates(workflow: dict[str, Any]) -> list[str]:
 def _normalize_project_name(value: Any) -> str | None:
     text = _clean_text(value)
     return text.lower() if text else None
+
+
+def _normalize_identifier(value: Any) -> str | None:
+    text = _clean_text(value)
+    return text.upper() if text else None
 
 
 def _first_item(value: Any) -> str | None:

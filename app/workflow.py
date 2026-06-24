@@ -286,6 +286,7 @@ def _advance_requirement_to_yunxiao_task(workflow: dict[str, Any], request: Work
             "yunxiao": {
                 "createResult": {
                     "workitemIdentifier": result["workitemIdentifier"],
+                    "workitemDisplayId": result.get("workitemDisplayId"),
                     "requestId": result.get("requestId"),
                     "projectName": result.get("projectName"),
                     "projectId": result.get("projectId"),
@@ -306,6 +307,7 @@ def _advance_requirement_to_yunxiao_task(workflow: dict[str, Any], request: Work
         operator=_clean_text(request.operator),
         event_payload={
             "yunxiaoTaskId": result["workitemIdentifier"],
+            "yunxiaoTaskDisplayId": result.get("workitemDisplayId"),
             "projectName": result.get("projectName"),
             "projectId": result.get("projectId"),
             "assignee": result.get("assignee"),
@@ -318,6 +320,7 @@ def _advance_requirement_to_yunxiao_task(workflow: dict[str, Any], request: Work
             "codingRequest": {
                 "source": "yunxiao_workitem_created",
                 "yunxiaoTaskId": result["workitemIdentifier"],
+                "yunxiaoTaskDisplayId": result.get("workitemDisplayId"),
                 "assignee": result.get("assignee"),
             }
         },
@@ -326,13 +329,17 @@ def _advance_requirement_to_yunxiao_task(workflow: dict[str, Any], request: Work
         workflow_id=workflow_id,
         context=coding_context,
         operator=_clean_text(request.operator),
-        event_payload={"yunxiaoTaskId": result["workitemIdentifier"]},
+        event_payload={
+            "yunxiaoTaskId": result["workitemIdentifier"],
+            "yunxiaoTaskDisplayId": result.get("workitemDisplayId"),
+        },
     )
     return {
         "workflow": updated,
         "advanced": True,
         "yunxiao": {
             "workitemIdentifier": result["workitemIdentifier"],
+            "workitemDisplayId": result.get("workitemDisplayId"),
             "projectName": result.get("projectName"),
             "projectId": result.get("projectId"),
         },
@@ -368,6 +375,7 @@ def _advance_apifox_synced_to_yunxiao_closed(
                 **((workflow.get("context") or {}).get("yunxiao") or {}),
                 "closeResult": {
                     "workitemIdentifier": result["workitemIdentifier"],
+                    "workitemDisplayId": result.get("workitemDisplayId"),
                     "alreadyClosed": result.get("alreadyClosed"),
                     "closedStatus": result.get("closedStatus"),
                     "closedStatusName": result.get("closedStatusName"),
@@ -387,6 +395,7 @@ def _advance_apifox_synced_to_yunxiao_closed(
         message=message,
         event_payload={
             "yunxiaoTaskId": result["workitemIdentifier"],
+            "yunxiaoTaskDisplayId": result.get("workitemDisplayId"),
             "closedStatus": result.get("closedStatus"),
             "closedStatusName": result.get("closedStatusName"),
             "alreadyClosed": result.get("alreadyClosed"),
@@ -398,6 +407,7 @@ def _advance_apifox_synced_to_yunxiao_closed(
         "advanced": True,
         "yunxiao": {
             "workitemIdentifier": result["workitemIdentifier"],
+            "workitemDisplayId": result.get("workitemDisplayId"),
             "alreadyClosed": result.get("alreadyClosed"),
             "closedStatus": result.get("closedStatus"),
             "closedStatusName": result.get("closedStatusName"),

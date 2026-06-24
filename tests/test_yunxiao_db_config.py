@@ -22,6 +22,42 @@ class _FakeConnection:
 
 
 class YunxiaoDbConfigTest(unittest.TestCase):
+    def test_map_workflow_instance_exposes_yunxiao_display_id_from_context(self) -> None:
+        row = {
+            "workflow_id": "wf-1",
+            "requirement_key": "req-1",
+            "dingtalk_url": None,
+            "dingtalk_node_id": None,
+            "yunxiao_task_id": "8ce853ae60df1fa6200ae2728d",
+            "yunxiao_pipeline_id": None,
+            "yunxiao_build_number": None,
+            "repo_url": None,
+            "branch_name": None,
+            "commit_id": None,
+            "apifox_project_id": None,
+            "status": "CODING_REQUESTED",
+            "retry_count": 0,
+            "last_error": None,
+            "context_json": db.dumps(
+                {
+                    "yunxiao": {
+                        "createResult": {
+                            "workitemIdentifier": "8ce853ae60df1fa6200ae2728d",
+                            "workitemDisplayId": "VEGZ-1186",
+                        }
+                    }
+                }
+            ),
+            "created_by": "codex",
+            "created_at": None,
+            "updated_at": None,
+        }
+
+        result = db._map_workflow_instance(row)
+
+        self.assertEqual(result["yunxiaoTaskId"], "8ce853ae60df1fa6200ae2728d")
+        self.assertEqual(result["yunxiaoTaskDisplayId"], "VEGZ-1186")
+
     def test_find_yunxiao_project_config_reads_project_mapping(self) -> None:
         cursor = MagicMock()
         cursor.__enter__.return_value = cursor

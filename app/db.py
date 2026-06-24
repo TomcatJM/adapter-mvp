@@ -1757,12 +1757,14 @@ def _insert_workflow_event(
 
 
 def _map_workflow_instance(row: dict[str, Any]) -> dict[str, Any]:
+    context = _json_or_none(row.get("context_json")) or {}
     return {
         "workflowId": row.get("workflow_id"),
         "requirementKey": row.get("requirement_key"),
         "dingtalkUrl": row.get("dingtalk_url"),
         "dingtalkNodeId": row.get("dingtalk_node_id"),
         "yunxiaoTaskId": row.get("yunxiao_task_id"),
+        "yunxiaoTaskDisplayId": _extract_yunxiao_task_display_id(context),
         "yunxiaoPipelineId": row.get("yunxiao_pipeline_id"),
         "yunxiaoBuildNumber": row.get("yunxiao_build_number"),
         "repoUrl": row.get("repo_url"),
@@ -1772,11 +1774,26 @@ def _map_workflow_instance(row: dict[str, Any]) -> dict[str, Any]:
         "status": row.get("status"),
         "retryCount": row.get("retry_count") or 0,
         "lastError": row.get("last_error"),
-        "context": _json_or_none(row.get("context_json")) or {},
+        "context": context,
         "createdBy": row.get("created_by"),
         "createdAt": _iso_or_none(row.get("created_at")),
         "updatedAt": _iso_or_none(row.get("updated_at")),
     }
+
+
+def _extract_yunxiao_task_display_id(context: dict[str, Any]) -> str | None:
+    if not isinstance(context, dict):
+        return None
+    yunxiao = context.get("yunxiao") if isinstance(context.get("yunxiao"), dict) else {}
+    for source in (
+        yunxiao.get("createResult") if isinstance(yunxiao.get("createResult"), dict) else {},
+        yunxiao.get("closeResult") if isinstance(yunxiao.get("closeResult"), dict) else {},
+        context.get("codingRequest") if isinstance(context.get("codingRequest"), dict) else {},
+    ):
+        value = source.get("yunxiaoTaskDisplayId") or source.get("workitemDisplayId")
+        if value not in (None, ""):
+            return str(value).strip()
+    return None
 
 
 def _map_workflow_event(row: dict[str, Any]) -> dict[str, Any]:
