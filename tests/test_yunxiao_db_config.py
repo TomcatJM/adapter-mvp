@@ -106,6 +106,55 @@ class YunxiaoDbConfigTest(unittest.TestCase):
         self.assertIn("adapter_yunxiao_account_config", sql)
         self.assertIn("LOWER(account_name)", sql)
 
+    def test_list_yunxiao_project_configs_reads_all_project_mappings(self) -> None:
+        cursor = MagicMock()
+        cursor.__enter__.return_value = cursor
+        cursor.__exit__.return_value = False
+        cursor.fetchall.return_value = [
+            {
+                "project_name": "jdb-demo",
+                "account_name": "yunxiao-personal-token",
+                "organization_id": "org-1",
+                "project_id": "project-1",
+                "remark": "demo",
+            },
+            {
+                "project_name": "jdb-school-crm",
+                "account_name": "yunxiao-personal-token",
+                "organization_id": "org-1",
+                "project_id": "project-1",
+                "remark": "crm",
+            },
+        ]
+
+        with patch("app.db.configured", return_value=True), patch("app.db.ensure_schema"), patch(
+            "app.db.connect", return_value=_FakeConnection(cursor)
+        ):
+            result = db.list_yunxiao_project_configs()
+
+        self.assertEqual(
+            result,
+            [
+                {
+                    "projectName": "jdb-demo",
+                    "accountName": "yunxiao-personal-token",
+                    "organizationId": "org-1",
+                    "projectId": "project-1",
+                    "remark": "demo",
+                },
+                {
+                    "projectName": "jdb-school-crm",
+                    "accountName": "yunxiao-personal-token",
+                    "organizationId": "org-1",
+                    "projectId": "project-1",
+                    "remark": "crm",
+                },
+            ],
+        )
+        sql = cursor.execute.call_args.args[0]
+        self.assertIn("adapter_yunxiao_project_config", sql)
+        self.assertIn("ORDER BY project_name", sql)
+
     def test_find_yunxiao_project_member_reads_member_by_name_or_id(self) -> None:
         cursor = MagicMock()
         cursor.__enter__.return_value = cursor

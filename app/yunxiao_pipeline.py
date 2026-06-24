@@ -1,19 +1,43 @@
 from __future__ import annotations
 
+import re
+import urllib.parse
 from typing import Any
 
 from app import db
 from app.apifox import maybe_import_from_flow_event
 from app.models import YunxiaoPipelineFailureCallback
+from app.yunxiao_flow import discover_project_from_pipeline
 
 
-PIPELINE_SUCCESS_FROM_STATUSES = {"CODE_SUBMITTED", "PIPELINE_RUNNING"}
-PIPELINE_FAILURE_FROM_STATUSES = {"CODE_SUBMITTED", "PIPELINE_RUNNING", "PIPELINE_SUCCESS"}
-PIPELINE_RUNNING_FROM_STATUSES = {"CODE_SUBMITTED"}
+PIPELINE_SUCCESS_FROM_STATUSES = {"CODING_REQUESTED", "CODE_SUBMITTED", "PIPELINE_RUNNING"}
+PIPELINE_FAILURE_FROM_STATUSES = {"CODING_REQUESTED", "CODE_SUBMITTED", "PIPELINE_RUNNING", "PIPELINE_SUCCESS"}
+PIPELINE_RUNNING_FROM_STATUSES = {"CODING_REQUESTED", "CODE_SUBMITTED"}
+PIPELINE_SUCCESS_BINDING_STATUSES = {*PIPELINE_SUCCESS_FROM_STATUSES, "PIPELINE_SUCCESS"}
+PIPELINE_RUNNING_BINDING_STATUSES = {*PIPELINE_RUNNING_FROM_STATUSES}
+PIPELINE_FAILURE_BINDING_STATUSES = {*PIPELINE_FAILURE_FROM_STATUSES}
+PROJECT_BINDING_LIMIT = 50
+IDENTIFIER_RE = r"([A-Za-z0-9][A-Za-z0-9_.:-]{1,127})"
+COMMIT_WORKFLOW_PATTERNS = (
+    re.compile(rf"(?im)^\s*(?:WORKFLOW_ID|WORKFLOWID|workflowId|workflow_id)\s*[:=：]\s*{IDENTIFIER_RE}\b"),
+    re.compile(rf"(?m)^\s*(?:工作流ID|工作流编号)\s*[:=：]\s*{IDENTIFIER_RE}\b"),
+    re.compile(rf"(?i)(?:^|[\s,;，；])(?:WORKFLOW_ID|WORKFLOWID|workflowId|workflow_id)\s*[:=：]\s*{IDENTIFIER_RE}\b"),
+    re.compile(rf"(?:^|[\s,;，；])(?:工作流ID|工作流编号)\s*[:=：]\s*{IDENTIFIER_RE}\b"),
+)
+COMMIT_YUNXIAO_TASK_PATTERNS = (
+    re.compile(
+        rf"(?im)^\s*(?:YUNXIAO_TASK_ID|YUNXIAO_WORKITEM_ID|WORKITEM_ID|REQUIREMENT_ID|TASK_ID)\s*[:=：]\s*{IDENTIFIER_RE}\b"
+    ),
+    re.compile(rf"(?m)^\s*(?:云效任务ID|云效任务编号|云效工作项ID|任务编号)\s*[:=：]\s*{IDENTIFIER_RE}\b"),
+    re.compile(
+        rf"(?i)(?:^|[\s,;，；])(?:YUNXIAO_TASK_ID|YUNXIAO_WORKITEM_ID|WORKITEM_ID|REQUIREMENT_ID|TASK_ID)\s*[:=：]\s*{IDENTIFIER_RE}\b"
+    ),
+    re.compile(rf"(?:^|[\s,;，；])(?:云效任务ID|云效任务编号|云效工作项ID|任务编号)\s*[:=：]\s*{IDENTIFIER_RE}\b"),
+)
 
 
 def handle_pipeline_success(payload: dict[str, Any], callback: YunxiaoPipelineFailureCallback) -> dict[str, Any]:
-    workflow, binding = _find_workflow_for_callback(payload, callback)
+    workflow, binding = _find_workflow_for_callback(payload, callback, PIPELINE_SUCCESS_BINDING_STATUSES)
     if not workflow:
         if binding.get("reason") in {"workflow not found", "workflow match ambiguous"}:
             return {
@@ -106,7 +130,7 @@ def handle_pipeline_success(payload: dict[str, Any], callback: YunxiaoPipelineFa
 
 
 def handle_pipeline_running(callback: YunxiaoPipelineFailureCallback) -> dict[str, Any]:
-    workflow, binding = _find_workflow_for_callback(callback.params, callback)
+    workflow, binding = _find_workflow_for_callback(callback.params, callback, PIPELINE_RUNNING_BINDING_STATUSES)
     if not workflow:
         return {
             "bound": False,
@@ -154,7 +178,7 @@ def handle_pipeline_running(callback: YunxiaoPipelineFailureCallback) -> dict[st
 
 
 def handle_pipeline_failure(callback: YunxiaoPipelineFailureCallback, analysis: dict[str, Any]) -> dict[str, Any]:
-    workflow, binding = _find_workflow_for_callback(callback.params, callback)
+    workflow, binding = _find_workflow_for_callback(callback.params, callback, PIPELINE_FAILURE_BINDING_STATUSES)
     if not workflow:
         return {
             "bound": False,
@@ -253,6 +277,7 @@ def _workflow_id_from_callback(callback: YunxiaoPipelineFailureCallback) -> str 
 def _find_workflow_for_callback(
     payload: dict[str, Any],
     callback: YunxiaoPipelineFailureCallback,
+    project_binding_statuses: set[str],
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     workflow_id = _workflow_id_from_payload(payload, callback)
     if workflow_id:
@@ -265,6 +290,7 @@ def _find_workflow_for_callback(
 
     params = _params_payload(payload)
     attempts: list[dict[str, Any]] = []
+    commit_binding = _binding_ids_from_commit_message(callback.commit_message)
 
     yunxiao_task_id = _clean_text(
         _pick(
@@ -290,6 +316,33 @@ def _find_workflow_for_callback(
             return None, workflow
         if workflow:
             return workflow, {"source": "yunxiao_task_id", "attempts": attempts}
+
+    commit_workflow_id = commit_binding.get("workflowId")
+    if commit_workflow_id:
+        attempts.append({"source": "commit_message_workflow_id", "workflowId": commit_workflow_id})
+        workflow = db.find_workflow_instance(commit_workflow_id)
+        return workflow, {
+            "source": "commit_message_workflow_id",
+            "workflowId": commit_workflow_id,
+            "attempts": attempts,
+            "reason": None if workflow else "workflow not found",
+        }
+
+    commit_yunxiao_task_id = commit_binding.get("yunxiaoTaskId")
+    if commit_yunxiao_task_id:
+        attempts.append({"source": "commit_message_yunxiao_task_id", "value": commit_yunxiao_task_id})
+        workflow = _find_with_ambiguity_guard(
+            lambda: db.find_workflow_by_yunxiao_task_id(commit_yunxiao_task_id),
+            "commit_message_yunxiao_task_id",
+            attempts,
+        )
+        if isinstance(workflow, dict) and workflow.get("reason") == "workflow match ambiguous":
+            return None, workflow
+        return workflow, {
+            "source": "commit_message_yunxiao_task_id",
+            "attempts": attempts,
+            "reason": None if workflow else "workflow not found",
+        }
 
     pipeline_id = _clean_text(callback.pipeline_id)
     build_number = _clean_text(callback.build_number)
@@ -319,6 +372,20 @@ def _find_workflow_for_callback(
         if workflow:
             return workflow, {"source": "branch_commit", "attempts": attempts}
 
+    if pipeline_id:
+        project_name = _project_name_from_pipeline_config(pipeline_id)
+        if project_name:
+            attempts.append({"source": "project_active_workflow", "pipelineId": pipeline_id, "projectName": project_name})
+            workflow = _find_with_ambiguity_guard(
+                lambda: _find_active_workflow_by_project(project_name, project_binding_statuses),
+                "project_active_workflow",
+                attempts,
+            )
+            if isinstance(workflow, dict) and workflow.get("reason") == "workflow match ambiguous":
+                return None, workflow
+            if workflow:
+                return workflow, {"source": "project_active_workflow", "attempts": attempts}
+
     return None, {"source": None, "attempts": attempts, "reason": "workflow not matched"}
 
 
@@ -334,6 +401,96 @@ def _find_with_ambiguity_guard(find: Any, source: str, attempts: list[dict[str, 
         }
 
 
+def _project_name_from_pipeline_config(pipeline_id: str) -> str | None:
+    config = db.find_apifox_pipeline_config(pipeline_id)
+    project_name = _clean_text((config or {}).get("projectName"))
+    if project_name:
+        return project_name
+    discovery = discover_project_from_pipeline(pipeline_id)
+    return _clean_text(discovery.get("projectName")) if discovery.get("matched") else None
+
+
+def _find_active_workflow_by_project(project_name: str, statuses: set[str]) -> dict[str, Any] | None:
+    project_aliases = _project_aliases(project_name)
+    candidates = [
+        workflow
+        for workflow in db.list_workflows_by_statuses(statuses, limit=PROJECT_BINDING_LIMIT)
+        if _project_matches_workflow(project_aliases, workflow)
+    ]
+    if len(candidates) > 1:
+        workflow_ids = ", ".join(str(item.get("workflowId")) for item in candidates[:5])
+        raise db.WorkflowLookupAmbiguousError(
+            f"Multiple active workflow instances matched projectName={project_name}: {workflow_ids}"
+        )
+    return candidates[0] if candidates else None
+
+
+def _project_aliases(project_name: str) -> set[str]:
+    aliases = {_clean_text(project_name)}
+    project_config = db.find_yunxiao_project_config(project_name)
+    organization_id = _clean_text((project_config or {}).get("organizationId"))
+    yunxiao_project_id = _clean_text((project_config or {}).get("projectId"))
+    if organization_id and yunxiao_project_id:
+        for config in db.list_yunxiao_project_configs():
+            if _clean_text(config.get("organizationId")) == organization_id and _clean_text(config.get("projectId")) == yunxiao_project_id:
+                aliases.add(_clean_text(config.get("projectName")))
+    return {alias for alias in aliases if alias}
+
+
+def _project_matches_workflow(project_aliases: set[str], workflow: dict[str, Any]) -> bool:
+    expected = {_normalize_project_name(alias) for alias in project_aliases}
+    expected.discard(None)
+    if not expected:
+        return False
+    return any(_normalize_project_name(value) in expected for value in _workflow_project_candidates(workflow))
+
+
+def _workflow_project_candidates(workflow: dict[str, Any]) -> list[str]:
+    context = workflow.get("context") or {}
+    requirement = context.get("requirement") or {}
+    values: list[Any] = []
+    for source in (context, requirement):
+        values.extend(
+            source.get(key)
+            for key in ("projectName", "project_name", "serviceName", "service_name", "appName", "app_name")
+        )
+    values.append(_first_item(requirement.get("affectedRepos")))
+    values.append(_repo_name(workflow.get("repoUrl") or requirement.get("repoUrl")))
+    yunxiao = context.get("yunxiao") or {}
+    if isinstance(yunxiao, dict):
+        create_result = yunxiao.get("createResult") or {}
+        if isinstance(create_result, dict):
+            values.append(create_result.get("projectName"))
+    return [text for text in (_clean_text(value) for value in values) if text]
+
+
+def _normalize_project_name(value: Any) -> str | None:
+    text = _clean_text(value)
+    return text.lower() if text else None
+
+
+def _first_item(value: Any) -> str | None:
+    if isinstance(value, list):
+        for item in value:
+            text = _clean_text(item)
+            if text:
+                return text
+        return None
+    return _clean_text(value)
+
+
+def _repo_name(value: Any) -> str | None:
+    text = _clean_text(value)
+    if not text:
+        return None
+    parsed = urllib.parse.urlparse(text)
+    path = parsed.path if parsed.scheme or parsed.netloc else text
+    name = path.rstrip("/").split("/")[-1]
+    if name.endswith(".git"):
+        name = name[:-4]
+    return _clean_text(name)
+
+
 def _pipeline_context(callback: YunxiaoPipelineFailureCallback) -> dict[str, Any]:
     return {
         "taskId": callback.task_id,
@@ -342,8 +499,27 @@ def _pipeline_context(callback: YunxiaoPipelineFailureCallback) -> dict[str, Any
         "stageName": callback.stage_name,
         "branchName": callback.branch_name,
         "commitId": callback.commit_id,
+        "commitMessage": callback.commit_message,
         "operator": callback.operator,
     }
+
+
+def _binding_ids_from_commit_message(message: str | None) -> dict[str, str]:
+    text = _clean_text(message)
+    if not text:
+        return {}
+    result: dict[str, str] = {}
+    for pattern in COMMIT_WORKFLOW_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            result["workflowId"] = match.group(1)
+            break
+    for pattern in COMMIT_YUNXIAO_TASK_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            result["yunxiaoTaskId"] = match.group(1)
+            break
+    return result
 
 
 def _apifox_event_type(apifox: dict[str, Any]) -> str:

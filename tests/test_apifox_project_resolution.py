@@ -40,7 +40,9 @@ class ApifoxProjectResolutionTest(unittest.TestCase):
 
         with patch("app.apifox._find_pipeline_config", return_value=None), patch(
             "app.apifox._find_project_config", return_value=None
-        ), patch("app.apifox._import_openapi") as import_openapi:
+        ), patch("app.apifox.discover_project_from_pipeline", return_value={"matched": False}), patch(
+            "app.apifox._import_openapi"
+        ) as import_openapi:
             result = maybe_import_from_flow_event(payload)
 
         import_openapi.assert_not_called()
@@ -52,6 +54,44 @@ class ApifoxProjectResolutionTest(unittest.TestCase):
         self.assertEqual(result["projectConfigSource"], "unresolved")
         self.assertIn("missing Apifox project mapping", result["reason"])
         self.assertIn("APIFOX_DEFAULT_PROJECT_ID is intentionally ignored", result["reason"])
+
+    def test_pipeline_id_can_auto_discover_project_and_use_cached_mapping(self) -> None:
+        payload = {
+            "task": {"pipelineId": "4836717", "statusCode": "SUCCESS"},
+            "sources": [],
+            "globalParams": [],
+        }
+        project_config = {
+            "projectName": "adapter-mvp",
+            "apifoxProjectId": "8460173",
+            "openapiUrl": "http://47.116.102.238:18080/openapi.json",
+            "remark": "adapter-mvp self openapi",
+        }
+
+        with patch("app.apifox._find_pipeline_config") as find_pipeline_config, patch(
+            "app.apifox.discover_project_from_pipeline",
+            return_value={
+                "matched": True,
+                "projectName": "adapter-mvp",
+                "source": "yunxiao_pipeline",
+                "remark": "auto-discovered",
+            },
+        ) as discover, patch("app.apifox._find_project_config", return_value=project_config), patch(
+            "app.apifox._preflight_openapi", return_value={"ok": True, "pathCount": 20}
+        ), patch("app.apifox._import_openapi", return_value={"statusCode": 201}) as import_openapi:
+            find_pipeline_config.side_effect = [
+                None,
+                {"pipelineId": "4836717", "projectName": "adapter-mvp", "remark": "auto-discovered"},
+            ]
+            result = maybe_import_from_flow_event(payload)
+
+        discover.assert_called_once_with("4836717")
+        import_openapi.assert_called_once()
+        self.assertTrue(result["imported"])
+        self.assertEqual(result["projectName"], "adapter-mvp")
+        self.assertEqual(result["projectNameSource"], "database_pipeline")
+        self.assertEqual(result["projectId"], "8460173")
+        self.assertEqual(result["pipelineDiscovery"]["source"], "yunxiao_pipeline")
 
     def test_missing_project_id_reports_project_name_without_default_fallback(self) -> None:
         payload = {

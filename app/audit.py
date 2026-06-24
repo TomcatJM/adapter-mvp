@@ -95,6 +95,26 @@ def log_apifox_import(task_id: str, operator: str, result: dict[str, Any]) -> No
     )
 
 
+def log_webhook_error(source: str, payload: dict[str, Any], exc: Exception) -> None:
+    task = payload.get("task") if isinstance(payload.get("task"), dict) else payload
+    task_id = task.get("taskId") or task.get("task_id")
+    pipeline_id = task.get("pipelineId") or task.get("pipeline_id") or task.get("flowId") or task.get("flow_id")
+    build_number = task.get("buildNumber") or task.get("build_number") or task.get("buildNo") or task.get("build_no")
+    _write(
+        {
+            "event": "webhook_error",
+            "taskId": str(task_id or f"yx-flow-{pipeline_id or 'unknown'}-{build_number or '0'}"),
+            "operator": "yunxiao",
+            "status": "FAILED",
+            "message": f"{type(exc).__name__}: {str(exc)}"[:1024],
+            "pipelineId": pipeline_id,
+            "buildNumber": build_number,
+            "source": source,
+            "payload": payload,
+        }
+    )
+
+
 def find_by_task_id(task_id: str, limit: int = 50) -> list[dict[str, Any]]:
     rows = _find_db(task_id, limit)
     if rows:

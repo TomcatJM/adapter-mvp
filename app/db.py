@@ -589,6 +589,48 @@ def find_workflow_by_branch_commit(branch_name: str, commit_id: str) -> dict[str
     )
 
 
+def list_workflows_by_statuses(statuses: list[str] | tuple[str, ...] | set[str], limit: int = 50) -> list[dict[str, Any]]:
+    _require_configured()
+    ensure_schema()
+    safe_statuses = [str(status).strip() for status in statuses if str(status or "").strip()]
+    if not safe_statuses:
+        return []
+    safe_limit = max(1, min(int(limit or 50), 200))
+    placeholders = ", ".join(["%s"] * len(safe_statuses))
+    with connect() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT
+                    workflow_id,
+                    requirement_key,
+                    dingtalk_url,
+                    dingtalk_node_id,
+                    yunxiao_task_id,
+                    yunxiao_pipeline_id,
+                    yunxiao_build_number,
+                    repo_url,
+                    branch_name,
+                    commit_id,
+                    apifox_project_id,
+                    status,
+                    retry_count,
+                    last_error,
+                    context_json,
+                    created_by,
+                    created_at,
+                    updated_at
+                FROM adapter_workflow_instance
+                WHERE status IN ({placeholders})
+                ORDER BY updated_at DESC
+                LIMIT %s
+                """,
+                tuple(safe_statuses + [safe_limit]),
+            )
+            rows = cursor.fetchall()
+    return [_map_workflow_instance(row) for row in rows]
+
+
 def _find_workflow_instance_by_clause(where_clause: str, params: tuple[Any, ...]) -> dict[str, Any] | None:
     with connect() as conn:
         with conn.cursor() as cursor:
@@ -1226,6 +1268,52 @@ def find_apifox_pipeline_config(pipeline_id: str) -> dict[str, Any] | None:
         return None
 
 
+def list_apifox_project_configs() -> list[dict[str, Any]]:
+    if not configured():
+        return []
+    try:
+        ensure_schema()
+        with connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT project_name, apifox_project_id, openapi_url, remark
+                    FROM adapter_apifox_project_config
+                    ORDER BY project_name
+                    """
+                )
+                rows = cursor.fetchall()
+        return [
+            {
+                "projectName": row.get("project_name"),
+                "apifoxProjectId": row.get("apifox_project_id"),
+                "openapiUrl": row.get("openapi_url"),
+                "remark": row.get("remark"),
+            }
+            for row in rows
+        ]
+    except Exception:
+        return []
+
+
+def upsert_apifox_pipeline_config(pipeline_id: str, project_name: str, remark: str | None = None) -> None:
+    if not configured() or not pipeline_id or not project_name:
+        return
+    ensure_schema()
+    with connect() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO adapter_apifox_pipeline_config (pipeline_id, project_name, remark)
+                VALUES (%s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    project_name = VALUES(project_name),
+                    remark = VALUES(remark)
+                """,
+                (pipeline_id, project_name, remark),
+            )
+
+
 def find_yunxiao_account_config(account_name: str) -> dict[str, Any] | None:
     if not configured() or not account_name:
         return None
@@ -1265,6 +1353,35 @@ def find_yunxiao_account_config(account_name: str) -> dict[str, Any] | None:
         }
     except Exception:
         return None
+
+
+def list_yunxiao_project_configs() -> list[dict[str, Any]]:
+    if not configured():
+        return []
+    try:
+        ensure_schema()
+        with connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT project_name, account_name, organization_id, project_id, remark
+                    FROM adapter_yunxiao_project_config
+                    ORDER BY project_name
+                    """
+                )
+                rows = cursor.fetchall()
+        return [
+            {
+                "projectName": row.get("project_name"),
+                "accountName": row.get("account_name"),
+                "organizationId": row.get("organization_id"),
+                "projectId": row.get("project_id"),
+                "remark": row.get("remark"),
+            }
+            for row in rows
+        ]
+    except Exception:
+        return []
 
 
 def find_yunxiao_project_config(project_name: str) -> dict[str, Any] | None:

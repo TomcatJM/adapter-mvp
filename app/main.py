@@ -1,3 +1,5 @@
+import json
+import urllib.parse
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -19,6 +21,7 @@ from app.audit import (
     log_pipeline_failure,
     log_preview,
     log_status,
+    log_webhook_error,
 )
 from app.models import (
     AdapterRequest,
@@ -413,12 +416,26 @@ def yunxiao_pipeline_failure_callback(callback: YunxiaoPipelineFailureCallback):
 
 @app.post(YUNXIAO_FLOW_EVENT_PATH, summary="接收云效流水线事件", tags=["云效回调"], dependencies=[Depends(require_api_token)])
 def yunxiao_flow_event(payload: dict[str, Any]):
-    return _handle_flow_event(payload)
+    return _handle_flow_event_safely(payload, source="yunxiao_flow_event")
 
 
 @app.post(YUNXIAO_FLOW_EVENT_PUBLIC_PATH, summary="接收云效公开流水线事件", tags=["云效回调"])
 def yunxiao_flow_event_public(payload: dict[str, Any]):
-    return _handle_flow_event(payload)
+    return _handle_flow_event_safely(payload, source="yunxiao_flow_event_public")
+
+
+def _handle_flow_event_safely(payload: dict[str, Any], source: str) -> dict[str, Any]:
+    try:
+        return _handle_flow_event(payload)
+    except Exception as exc:
+        log_webhook_error(source, payload, exc)
+        return {
+            "source": "yunxiao",
+            "mode": "flow_event",
+            "handled": False,
+            "error": "internal_error",
+            "message": f"{type(exc).__name__}: {str(exc)}"[:1024],
+        }
 
 
 def _handle_flow_event(payload: dict[str, Any]) -> dict[str, Any]:
@@ -507,6 +524,22 @@ def _normalize_flow_event(payload: dict[str, Any]) -> YunxiaoPipelineFailureCall
             or _pick(task, "commitId", "commit_id", "commit")
             or _pick(params, "COMMIT_ID", "commitId", "commit_id", "commit")
         ),
+        commitMessage=_decode_commit_message(
+            _pick(source, "commitMessage", "commit_message", "commitMsg", "commit_msg")
+            or _pick(task, "commitMessage", "commit_message", "commitMsg", "commit_msg")
+            or _pick(
+                params,
+                "COMMIT_MESSAGE",
+                "commitMessage",
+                "commit_message",
+                "COMMIT_MSG",
+                "commitMsg",
+                "commit_msg",
+                "CI_COMMIT_MESSAGE",
+                "CI_COMMIT_TITLE",
+                "CI_COMMIT_TITLE_1",
+            )
+        ),
         operator=str(_pick(params, "BUILD_USER", "operator", "triggerUser", "trigger_user", "buildUser", "build_user", default="yunxiao")),
         exitCode=1,
         logTail=str(_pick(task, "message", "statusName", "status_name", default="")),
@@ -557,8 +590,55 @@ def _task_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def _source_payload(payload: dict[str, Any]) -> dict[str, Any]:
     sources = payload.get("sources")
     if isinstance(sources, list) and sources and isinstance(sources[0], dict):
-        return sources[0]
+        source = sources[0]
+        data = source.get("data")
+        if isinstance(data, dict):
+            return {**source, **data}
+        return source
     return payload
+
+
+def _decode_commit_message(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    parsed: Any | None = value if isinstance(value, (dict, list)) else None
+    decoded: str | None = None
+    if parsed is None:
+        text = str(value).strip()
+        if not text:
+            return None
+        decoded = urllib.parse.unquote(text)
+        for candidate in (text, decoded):
+            try:
+                parsed = json.loads(candidate)
+                break
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+        if parsed is None:
+            return decoded
+
+    if isinstance(parsed, str):
+        return _decode_commit_text(parsed)
+    messages: list[str] = []
+    items = parsed if isinstance(parsed, list) else [parsed]
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        message = _pick(item, "commitMsg", "commitMessage", "commit_message", "message")
+        if message in (None, ""):
+            continue
+        decoded_message = _decode_commit_text(message)
+        if decoded_message:
+            messages.append(decoded_message)
+    if messages:
+        return "\n\n".join(message for message in messages if message)
+    return decoded
+
+
+def _decode_commit_text(value: Any) -> str | None:
+    text = urllib.parse.unquote(str(value).strip())
+    text = text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
+    return text or None
 
 
 def _params_payload(payload: dict[str, Any]) -> dict[str, Any]:

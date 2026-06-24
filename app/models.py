@@ -61,6 +61,7 @@ class YunxiaoPipelineFailureCallback(BaseModel):
     stage_name: str = Field(alias="stageName")
     branch_name: str | None = Field(default=None, alias="branchName")
     commit_id: str | None = Field(default=None, alias="commitId")
+    commit_message: str | None = Field(default=None, alias="commitMessage")
     operator: str = "yunxiao"
     exit_code: int | None = Field(default=None, alias="exitCode")
     log_tail: str = Field(default="", alias="logTail")

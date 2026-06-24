@@ -13,6 +13,7 @@ import urllib.request
 from typing import Any
 
 from app import db
+from app.yunxiao_flow import discover_project_from_pipeline
 
 
 class OpenapiValidationError(ValueError):
@@ -58,9 +59,19 @@ def _resolve_config(payload: dict[str, Any]) -> dict[str, Any]:
     params = _params_payload(payload)
     task = _task_payload(payload)
     source = _source_payload(payload)
+    auto_import = os.getenv("APIFOX_AUTO_IMPORT", "false").lower() == "true"
     pipeline_id = str(_pick(task, "pipelineId", "pipeline_id", "pipelineID", "flowId", "flow_id", default=""))
     pipeline_config = _find_pipeline_config(pipeline_id)
     payload_project_name = _pick(params, "PROJECT_NAME", "SERVICE_NAME", "APP_NAME", "APIFOX_PROJECT_KEY")
+    pipeline_discovery = None
+    if auto_import and pipeline_id and not payload_project_name and not pipeline_config:
+        pipeline_discovery = discover_project_from_pipeline(pipeline_id)
+        if pipeline_discovery.get("matched"):
+            pipeline_config = _find_pipeline_config(pipeline_id) or {
+                "pipelineId": pipeline_id,
+                "projectName": pipeline_discovery.get("projectName"),
+                "remark": pipeline_discovery.get("remark"),
+            }
     env_project_name = os.getenv(f"APIFOX_PIPELINE_{_normalize_key(pipeline_id)}_PROJECT")
     repo_project_name = _repo_name(str(_pick(source, "repo", default="")))
     if payload_project_name:
@@ -106,11 +117,12 @@ def _resolve_config(payload: dict[str, Any]) -> dict[str, Any]:
         else upstream_openapi_url
     )
     return {
-        "autoImport": os.getenv("APIFOX_AUTO_IMPORT", "false").lower() == "true",
+        "autoImport": auto_import,
         "pipelineId": pipeline_id,
         "projectName": project_name,
         "projectNameSource": project_name_source,
         "projectNameRemark": project_name_remark,
+        "pipelineDiscovery": pipeline_discovery,
         "projectKey": project_key,
         "projectId": project_id,
         "projectConfigSource": _project_config_source(params, project_config, project_key, project_name_source),

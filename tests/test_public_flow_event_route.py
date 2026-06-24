@@ -1,6 +1,8 @@
 import ast
+import importlib.util
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 MAIN_FILE = Path(__file__).resolve().parents[1] / "app" / "main.py"
@@ -108,6 +110,23 @@ class FlowEventRouteTest(unittest.TestCase):
                 self.assertEqual(ast.unparse(decorator.func), decorator_name)
                 self.assertEqual(ast.literal_eval(decorator.args[0]), path)
                 _assert_requires_api_token(self, decorator)
+
+    def test_public_flow_event_returns_structured_error_on_internal_exception(self) -> None:
+        if importlib.util.find_spec("fastapi") is None:
+            self.skipTest("fastapi is not installed")
+
+        from app import main
+
+        payload = {"task": {"pipelineId": "pipe-1", "buildNumber": "88", "statusCode": "SUCCESS"}}
+        with patch("app.main._handle_flow_event", side_effect=RuntimeError("boom")), patch(
+            "app.main.log_webhook_error"
+        ) as log_error:
+            result = main.yunxiao_flow_event_public(payload)
+
+        self.assertFalse(result["handled"])
+        self.assertEqual(result["error"], "internal_error")
+        self.assertIn("RuntimeError: boom", result["message"])
+        log_error.assert_called_once()
 
 
 if __name__ == "__main__":
