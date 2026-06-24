@@ -23,7 +23,8 @@ APIFOX_SYNCED -> YUNXIAO_TASK_CLOSED
 | 8. 云效工作项关闭/回写 | complete | 已接入 `APIFOX_SYNCED -> YUNXIAO_TASK_CLOSED`；评论回写、完成状态更新、已关闭补偿、失败转 `NEEDS_HUMAN` 均有单测覆盖。 |
 | 9. Apifox 项目级 OpenAPI 覆盖 | complete | 保留全局 OpenAPI 模板给其他项目，新增 `adapter_apifox_project_config.openapi_url` 支持 `adapter-mvp` 等单项目例外；远端已配置 `adapter-mvp -> 8460173 -> http://47.116.102.238:18080/openapi.json` 并重放 workflow 到 `APIFOX_SYNCED`。 |
 | 10. pipelineId 自动发现 Apifox 项目 | complete | 真实云效 Webhook 拿不到 `WORKFLOW_ID` 时，先用 `pipelineId` 查本地映射；未命中则查询云效 `GetPipeline`，唯一匹配已有 Apifox 项目后回写 `adapter_apifox_pipeline_config`。远端已验证 `4836717 -> jdb-school-crm` 自动发现并缓存。 |
-| 11. 无 WORKFLOW_ID 的 workflow 项目级绑定 | complete | 用 `pipelineId -> projectName` 后仅在该项目唯一活跃 workflow 时绑定；多候选返回歧义，不推进、不导入；本地 76 条测试通过。 |
+| 11. 无 WORKFLOW_ID 的 workflow 项目级绑定 | complete | 用 `pipelineId -> projectName` 后仅在该项目唯一活跃 workflow 时绑定；多候选返回歧义，不推进、不导入。 |
+| 12. 真实端到端闭环验证 | complete | `wf-e7569729c0c84761` 已跑通 `CREATED -> DOC_READ -> REQUIREMENT_PARSED -> YUNXIAO_TASK_CREATED -> CODING_REQUESTED -> PIPELINE_SUCCESS -> APIFOX_SYNCED -> YUNXIAO_TASK_CLOSED`；本地全量测试 84 条通过。 |
 
 ## Decisions
 
@@ -37,6 +38,7 @@ APIFOX_SYNCED -> YUNXIAO_TASK_CLOSED
 - Apifox OpenAPI 来源按 payload、项目表 `openapi_url`、项目环境变量、全局环境变量、全局模板逐级解析；单项目不走统一网关时只补项目表，不改全局模板。
 - Apifox 的 `pipelineId -> projectName` 可自动发现，但只允许匹配已有 `adapter_apifox_project_config.project_name`；无法唯一匹配时继续显式失败，避免推错项目。
 - `pipelineId -> projectName` 只能用于项目级 workflow 兜底绑定；只有同项目唯一活跃 workflow 时才推进，多个候选时返回 `workflow match ambiguous`。
+- 标准提交说明优先把 `YUNXIAO_TASK_ID=<实际云效任务ID>` 放在提交标题或正文；真实闭环已验证 `commit_message_yunxiao_task_id` 可以绑定 workflow。
 
 ## Errors Encountered
 

@@ -34,3 +34,11 @@
 - `pipelineId` 解析出的项目名不足以唯一代表 workflow；安全绑定规则必须是先尝试 `WORKFLOW_ID`、云效工作项 ID、`pipelineId + buildNumber`、`branchName + commitId`，最后才按项目唯一活跃 workflow 兜底。
 - 项目兜底绑定必须允许同一云效 `organization_id/project_id` 下的别名，例如代码项目 `jdb-school-crm` 和中文项目 `校CRM`，否则真实 workflow 可能因云效创建结果存中文项目名而无法绑定。
 - 如果同项目有多个活跃 workflow，正确行为是返回 `workflow match ambiguous`，不推进 workflow，也不触发 Apifox 导入。
+
+## 2026-06-24
+
+- 真实云效 Webhook 的代码源信息会放在 `sources[0].data`，不能只读 `sources[0]`。
+- 云效提交说明字段可能是 URL 编码的 JSON 字符串，也可能只出现在 `CI_COMMIT_TITLE`；Adapter 必须统一解码后再解析任务编号。
+- 提交说明中放 `YUNXIAO_TASK_ID=<实际云效任务ID>` 已验证可以稳定绑定 workflow，真实绑定来源为 `commit_message_yunxiao_task_id`。
+- 标准提交标题推荐：`feat: <说明> YUNXIAO_TASK_ID=<实际云效任务ID>`；如果标题放不下，可在正文单独一行写 `云效任务ID：<实际云效任务ID>`。
+- 最新真实闭环 `wf-e7569729c0c84761` 已最终进入 `YUNXIAO_TASK_CLOSED`，说明从钉钉需求到云效关单这条主线已经闭环。

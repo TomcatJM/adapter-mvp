@@ -49,3 +49,12 @@
 - 已新增 DB 只读 helper `list_workflows_by_statuses`，在 Python 层根据 workflow context、requirement、repoUrl、云效创建结果筛选项目，避免依赖 MySQL JSON 路径差异。
 - 已扩展 `tests/test_yunxiao_pipeline_workflow_binding.py` 覆盖项目级唯一绑定和多候选歧义保护。
 - 本地验证：`.venv/bin/python -m unittest discover -s tests` 通过 76 条。
+
+## 2026-06-24
+
+- 已修复真实云效 Webhook payload 解析：代码源字段在 `sources[0].data`，提交说明可能是 URL 编码 JSON 字符串，且云效可能只传 `CI_COMMIT_TITLE`。
+- 已支持从提交说明解析 `WORKFLOW_ID` / `YUNXIAO_TASK_ID` / `云效任务ID`，并在显式任务 ID 查不到 workflow 时停止后续项目兜底，避免串错需求。
+- 已用 jdb-demo 跑通真实端到端闭环：钉钉文档读取、结构化需求、云效任务创建、提交并触发云效流水线、Webhook 绑定 workflow、Apifox 导入、云效任务关闭。
+- 真实闭环记录：`workflowId=wf-e7569729c0c84761`，`yunxiaoTaskId=ed95e76c53c90902357808629b`，`pipelineId=4957185`，`buildNumber=25`，`commitId=74d1f2d0c992b8bedd259eeada76d833b87fb68a`，`apifoxProjectId=8483648`。
+- 最终远端 workflow 状态已查询确认：`YUNXIAO_TASK_CLOSED`；事件链为 `CREATED -> DOC_READ -> REQUIREMENT_PARSED -> YUNXIAO_TASK_CREATED -> CODING_REQUESTED -> PIPELINE_SUCCESS -> APIFOX_SYNCED -> YUNXIAO_TASK_CLOSED`。
+- 本地验证：`.venv/bin/python -m unittest discover -s tests` 通过 84 条。
