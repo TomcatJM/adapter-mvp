@@ -36,6 +36,15 @@ YUNXIAO_TASK_COMMIT_ALIASES = (
     "yunxiao_task_id",
     "yunxiao_task_display_id",
 )
+YUNXIAO_TASK_PARAM_ALIASES = (
+    *(alias for alias in YUNXIAO_TASK_COMMIT_ALIASES if alias != "TASK_ID"),
+    "requirementId",
+    "requirement_id",
+    "workitemId",
+    "workitemDisplayId",
+    "workitem_id",
+    "workitem_display_id",
+)
 YUNXIAO_TASK_CHINESE_ALIASES = (
     "云效任务ID",
     "云效任务编号",
@@ -53,6 +62,10 @@ YUNXIAO_TASK_CHINESE_ALIASES = (
 )
 YUNXIAO_TASK_COMMIT_ALIAS_RE = "|".join(re.escape(alias) for alias in YUNXIAO_TASK_COMMIT_ALIASES)
 YUNXIAO_TASK_CHINESE_ALIAS_RE = "|".join(re.escape(alias) for alias in YUNXIAO_TASK_CHINESE_ALIASES)
+YUNXIAO_TASK_CHINESE_KEY_RE = (
+    r"云效\s*(?:(?:任务|工作项|需求)\s*(?:展示|页面|显示)?\s*(?:ID|Id|id|编号)?|"
+    r"(?:展示|页面|显示)\s*(?:ID|Id|id|编号)?|(?:ID|Id|id|编号))"
+)
 COMMIT_WORKFLOW_PATTERNS = (
     re.compile(rf"(?im)^\s*(?:WORKFLOW_ID|WORKFLOWID|workflowId|workflow_id)\s*[:=：]\s*{IDENTIFIER_RE}\b"),
     re.compile(rf"(?m)^\s*(?:工作流ID|工作流编号)\s*[:=：]\s*{IDENTIFIER_RE}\b"),
@@ -61,8 +74,10 @@ COMMIT_WORKFLOW_PATTERNS = (
 )
 COMMIT_YUNXIAO_TASK_PATTERNS = (
     re.compile(rf"(?im)^\s*(?:{YUNXIAO_TASK_COMMIT_ALIAS_RE})\s*[:=：]\s*{IDENTIFIER_RE}\b"),
+    re.compile(rf"(?im)^\s*(?:{YUNXIAO_TASK_CHINESE_KEY_RE})\s*[:=：]\s*{IDENTIFIER_RE}\b"),
     re.compile(rf"(?m)^\s*(?:{YUNXIAO_TASK_CHINESE_ALIAS_RE})\s*[:=：]\s*{IDENTIFIER_RE}\b"),
     re.compile(rf"(?i)(?:^|[\s,;，；])(?:{YUNXIAO_TASK_COMMIT_ALIAS_RE})\s*[:=：]\s*{IDENTIFIER_RE}\b"),
+    re.compile(rf"(?i)(?:^|[\s,;，；])(?:{YUNXIAO_TASK_CHINESE_KEY_RE})\s*[:=：]\s*{IDENTIFIER_RE}\b"),
     re.compile(rf"(?:^|[\s,;，；])(?:{YUNXIAO_TASK_CHINESE_ALIAS_RE})\s*[:=：]\s*{IDENTIFIER_RE}\b"),
 )
 
@@ -323,26 +338,7 @@ def _find_workflow_for_callback(
     attempts: list[dict[str, Any]] = []
     commit_binding = _binding_ids_from_commit_message(callback.commit_message)
 
-    yunxiao_task_id = _clean_text(
-        _pick(
-            params,
-            "YUNXIAO_TASK_ID",
-            "YUNXIAO_TASK_DISPLAY_ID",
-            "YUNXIAO_DISPLAY_ID",
-            "YUNXIAO_WORKITEM_DISPLAY_ID",
-            "yunxiaoTaskId",
-            "yunxiaoTaskDisplayId",
-            "yunxiao_task_id",
-            "yunxiao_task_display_id",
-            "REQUIREMENT_ID",
-            "requirementId",
-            "requirement_id",
-            "workitemId",
-            "workitemDisplayId",
-            "workitem_id",
-            "workitem_display_id",
-        )
-    )
+    yunxiao_task_id = _pick_yunxiao_reference(params)
     if yunxiao_task_id:
         attempts.append({"source": "yunxiao_task_id", "value": yunxiao_task_id})
         workflow = _find_with_ambiguity_guard(
@@ -650,6 +646,36 @@ def _pick(payload: dict[str, Any], *keys: str, default: Any = None) -> Any:
         if value not in (None, ""):
             return value
     return default
+
+
+def _pick_yunxiao_reference(payload: dict[str, Any]) -> str | None:
+    value = _pick(payload, *YUNXIAO_TASK_PARAM_ALIASES)
+    if _clean_text(value):
+        return _clean_text(value)
+
+    for key, item_value in payload.items():
+        if item_value in (None, ""):
+            continue
+        if _is_yunxiao_reference_key(key):
+            return _clean_text(item_value)
+    return None
+
+
+def _is_yunxiao_reference_key(key: Any) -> bool:
+    text = _clean_text(key)
+    if not text:
+        return False
+    if text in YUNXIAO_TASK_PARAM_ALIASES:
+        return True
+
+    compact = re.sub(r"[\s_\-]+", "", text)
+    lower = compact.lower()
+    known = {re.sub(r"[\s_\-]+", "", alias).lower() for alias in YUNXIAO_TASK_PARAM_ALIASES}
+    if lower in known:
+        return True
+    if lower.startswith("yunxiao") and any(part in lower for part in ("id", "task", "workitem", "display", "requirement")):
+        return True
+    return bool(re.search(r"云效(?=.{0,16}(?:id|编号|任务|工作项|需求|展示|页面|显示))", compact, re.IGNORECASE))
 
 
 def _params_payload(payload: dict[str, Any]) -> dict[str, Any]:

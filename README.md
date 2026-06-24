@@ -212,10 +212,10 @@ POST /workflow/{workflow_id}/coding-result
 云效流水线绑定 workflow 的规则：
 
 - 优先使用 `WORKFLOW_ID` / `workflowId` 精确绑定。
-- 未传 `WORKFLOW_ID` 时，依次尝试云效工作项 ID、提交说明里的 `WORKFLOW_ID` / `YUNXIAO_TASK_DISPLAY_ID` / `YUNXIAO_TASK_ID`、`pipelineId + buildNumber`、`branchName + commitId`。`YUNXIAO_TASK_DISPLAY_ID` 优先填页面展示 ID，例如 `VEGZ-1186`；旧的 `YUNXIAO_TASK_ID` 仍兼容内部 `workitemIdentifier` 和页面展示 ID。
+- 未传 `WORKFLOW_ID` 时，依次尝试云效工作项 ID、提交说明里的 `WORKFLOW_ID` / `YUNXIAO_TASK_DISPLAY_ID` / `YUNXIAO_TASK_ID`、`pipelineId + buildNumber`、`branchName + commitId`。`YUNXIAO_TASK_DISPLAY_ID` 优先填页面展示 ID，例如 `VEGZ-1186`；`云效id`、`云效任务` 等中文 key 和旧的 `YUNXIAO_TASK_ID` 仍兼容。
 - 仍未命中时，用 `pipelineId` 解析项目；同项目当前只有一个可接收流水线事件的活跃 workflow 时，才用 `project_active_workflow` 绑定。
 - 项目级绑定支持 `jdb-school-crm` 和 `校CRM` 这类同云效 `organization_id/project_id` 的项目别名。
-- 如果提交说明里显式写了 `WORKFLOW_ID` / `YUNXIAO_TASK_DISPLAY_ID` / `YUNXIAO_TASK_ID` 但查不到 workflow，Adapter 会停止后续兜底，避免误绑定到其他活跃需求。
+- 如果提交说明里显式写了 `WORKFLOW_ID`、`YUNXIAO_TASK_DISPLAY_ID`、`云效id` / `云效任务` 这类云效中文 key 或 `YUNXIAO_TASK_ID` 但查不到 workflow，Adapter 会停止后续兜底，避免误绑定到其他活跃需求。
 - 多个候选 workflow 时返回 `workflow match ambiguous`，不推进 workflow，也不触发 Apifox 导入。
 - 成功回调会把 `CODE_SUBMITTED` / `PIPELINE_RUNNING` 推进到 `PIPELINE_SUCCESS`。
 - Apifox 导入成功，即 `imported=true`，才会继续推进到 `APIFOX_SYNCED`。
