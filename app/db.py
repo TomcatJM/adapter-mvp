@@ -175,6 +175,41 @@ def ensure_schema() -> None:
                 )
                 cursor.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS adapter_yunxiao_member (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
+                        member_name VARCHAR(128) NOT NULL COMMENT '人员姓名，例如 姬志猛',
+                        yunxiao_account_id VARCHAR(128) NOT NULL COMMENT '云效账号ID',
+                        enabled TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否启用：1启用，0停用',
+                        remark VARCHAR(512) NULL COMMENT '备注',
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                        UNIQUE KEY uk_adapter_yunxiao_member_account (yunxiao_account_id),
+                        KEY idx_adapter_yunxiao_member_name (member_name),
+                        KEY idx_adapter_yunxiao_member_enabled (enabled)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter云效人员表'
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS adapter_yunxiao_project_member_relation (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
+                        project_name VARCHAR(128) NOT NULL COMMENT '业务项目名称，例如 jdb-school-crm',
+                        yunxiao_account_id VARCHAR(128) NOT NULL COMMENT '云效账号ID，关联adapter_yunxiao_member.yunxiao_account_id',
+                        is_default TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否项目默认负责人：1是，0否',
+                        enabled TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否启用：1启用，0停用',
+                        remark VARCHAR(512) NULL COMMENT '备注',
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                        UNIQUE KEY uk_adapter_yunxiao_project_member_relation (project_name, yunxiao_account_id),
+                        KEY idx_adapter_yunxiao_project_member_relation_default (project_name, is_default, enabled),
+                        KEY idx_adapter_yunxiao_project_member_relation_account (yunxiao_account_id)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter云效项目人员关联表'
+                    """
+                )
+                cursor.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS adapter_yunxiao_project_member (
                         id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
                         project_name VARCHAR(128) NOT NULL COMMENT '业务项目名称，例如 jdb-school-crm',
@@ -319,6 +354,7 @@ def ensure_schema() -> None:
                     """
                 )
                 _ensure_comments(cursor)
+                _migrate_yunxiao_project_members(cursor)
                 _migrate_dingtalk_app_config(cursor)
         _schema_ready = True
 
@@ -376,6 +412,8 @@ def _ensure_comments(cursor) -> None:
         "ALTER TABLE adapter_yunxiao_project_config ADD COLUMN comment_field_key VARCHAR(128) NULL COMMENT '回写字段Key，保留扩展' AFTER done_status_names",
         "ALTER TABLE adapter_yunxiao_project_config ADD COLUMN comment_format_type VARCHAR(32) NULL COMMENT '评论格式，默认MARKDOWN' AFTER comment_field_key",
         "ALTER TABLE adapter_yunxiao_project_config ADD COLUMN close_transition_id VARCHAR(128) NULL COMMENT '云效关闭流转ID，优先于done_status_id' AFTER comment_format_type",
+        "ALTER TABLE adapter_yunxiao_member COMMENT='Adapter云效人员表'",
+        "ALTER TABLE adapter_yunxiao_project_member_relation COMMENT='Adapter云效项目人员关联表'",
         "ALTER TABLE adapter_yunxiao_project_member COMMENT='Adapter云效项目人员配置表'",
         "ALTER TABLE adapter_dingtalk_app_config COMMENT='Adapter钉钉文档读取旧版混合配置表'",
         "ALTER TABLE adapter_dingtalk_app_config ADD COLUMN operator_id VARCHAR(128) NULL COMMENT '钉钉文档操作人userId' AFTER token_header_name",
@@ -387,6 +425,67 @@ def _ensure_comments(cursor) -> None:
             cursor.execute(statement)
         except Exception:
             pass
+
+
+def _migrate_yunxiao_project_members(cursor) -> None:
+    try:
+        cursor.execute(
+            """
+            INSERT INTO adapter_yunxiao_member (
+                member_name,
+                yunxiao_account_id,
+                enabled,
+                remark,
+                created_at,
+                updated_at
+            )
+            SELECT
+                MAX(member_name) AS member_name,
+                yunxiao_account_id,
+                MAX(enabled) AS enabled,
+                MAX(remark) AS remark,
+                MIN(created_at) AS created_at,
+                MAX(updated_at) AS updated_at
+            FROM adapter_yunxiao_project_member
+            WHERE member_name IS NOT NULL
+              AND yunxiao_account_id IS NOT NULL
+            GROUP BY yunxiao_account_id
+            ON DUPLICATE KEY UPDATE
+                member_name = VALUES(member_name),
+                enabled = VALUES(enabled),
+                remark = COALESCE(VALUES(remark), adapter_yunxiao_member.remark)
+            """
+        )
+        cursor.execute(
+            """
+            INSERT INTO adapter_yunxiao_project_member_relation (
+                project_name,
+                yunxiao_account_id,
+                is_default,
+                enabled,
+                remark,
+                created_at,
+                updated_at
+            )
+            SELECT
+                project_name,
+                yunxiao_account_id,
+                is_default,
+                enabled,
+                remark,
+                created_at,
+                updated_at
+            FROM adapter_yunxiao_project_member
+            WHERE project_name IS NOT NULL
+              AND yunxiao_account_id IS NOT NULL
+            ON DUPLICATE KEY UPDATE
+                is_default = VALUES(is_default),
+                enabled = VALUES(enabled),
+                remark = COALESCE(VALUES(remark), adapter_yunxiao_project_member_relation.remark)
+            """
+        )
+    except Exception:
+        pass
 
 
 def _migrate_dingtalk_app_config(cursor) -> None:
@@ -1459,24 +1558,49 @@ def find_yunxiao_project_member(project_name: str, assignee: str) -> dict[str, A
                 cursor.execute(
                     """
                     SELECT
-                        project_name,
-                        member_name,
-                        yunxiao_account_id,
-                        is_default,
-                        enabled,
-                        remark
-                    FROM adapter_yunxiao_project_member
-                    WHERE LOWER(project_name) = LOWER(%s)
-                      AND enabled = 1
+                        rel.project_name,
+                        member.member_name,
+                        member.yunxiao_account_id,
+                        rel.is_default,
+                        rel.enabled,
+                        COALESCE(rel.remark, member.remark) AS remark
+                    FROM adapter_yunxiao_project_member_relation rel
+                    JOIN adapter_yunxiao_member member
+                      ON member.yunxiao_account_id = rel.yunxiao_account_id
+                    WHERE LOWER(rel.project_name) = LOWER(%s)
+                      AND rel.enabled = 1
+                      AND member.enabled = 1
                       AND (
-                        LOWER(member_name) = LOWER(%s)
-                        OR yunxiao_account_id = %s
+                        LOWER(member.member_name) = LOWER(%s)
+                        OR member.yunxiao_account_id = %s
                       )
                     LIMIT 1
                     """,
                     (project_name, assignee, assignee),
                 )
                 row = cursor.fetchone()
+                if not row:
+                    cursor.execute(
+                        """
+                        SELECT
+                            project_name,
+                            member_name,
+                            yunxiao_account_id,
+                            is_default,
+                            enabled,
+                            remark
+                        FROM adapter_yunxiao_project_member
+                        WHERE LOWER(project_name) = LOWER(%s)
+                          AND enabled = 1
+                          AND (
+                            LOWER(member_name) = LOWER(%s)
+                            OR yunxiao_account_id = %s
+                          )
+                        LIMIT 1
+                        """,
+                        (project_name, assignee, assignee),
+                    )
+                    row = cursor.fetchone()
         if not row:
             return None
         return {
@@ -1501,22 +1625,45 @@ def find_default_yunxiao_project_member(project_name: str) -> dict[str, Any] | N
                 cursor.execute(
                     """
                     SELECT
-                        project_name,
-                        member_name,
-                        yunxiao_account_id,
-                        is_default,
-                        enabled,
-                        remark
-                    FROM adapter_yunxiao_project_member
-                    WHERE LOWER(project_name) = LOWER(%s)
-                      AND enabled = 1
-                      AND is_default = 1
-                    ORDER BY updated_at DESC, id DESC
+                        rel.project_name,
+                        member.member_name,
+                        member.yunxiao_account_id,
+                        rel.is_default,
+                        rel.enabled,
+                        COALESCE(rel.remark, member.remark) AS remark
+                    FROM adapter_yunxiao_project_member_relation rel
+                    JOIN adapter_yunxiao_member member
+                      ON member.yunxiao_account_id = rel.yunxiao_account_id
+                    WHERE LOWER(rel.project_name) = LOWER(%s)
+                      AND rel.enabled = 1
+                      AND rel.is_default = 1
+                      AND member.enabled = 1
+                    ORDER BY rel.updated_at DESC, rel.id DESC
                     LIMIT 1
                     """,
                     (project_name,),
                 )
                 row = cursor.fetchone()
+                if not row:
+                    cursor.execute(
+                        """
+                        SELECT
+                            project_name,
+                            member_name,
+                            yunxiao_account_id,
+                            is_default,
+                            enabled,
+                            remark
+                        FROM adapter_yunxiao_project_member
+                        WHERE LOWER(project_name) = LOWER(%s)
+                          AND enabled = 1
+                          AND is_default = 1
+                        ORDER BY updated_at DESC, id DESC
+                        LIMIT 1
+                        """,
+                        (project_name,),
+                    )
+                    row = cursor.fetchone()
         if not row:
             return None
         return {

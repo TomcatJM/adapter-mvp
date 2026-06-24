@@ -31,6 +31,11 @@ Project members can also be maintained without touching account/project config:
     --member-account-id user-id \
     --member-default
 
+Global Yunxiao people can be maintained without a project relation:
+  python scripts/upsert_yunxiao_config.py --person-only \
+    --member-name 姬志猛 \
+    --member-account-id user-id
+
 The script reads DB connection settings from environment variables and never
 prints AccessKey values, legacy tokens, security tokens, or other secrets.
 """
@@ -76,7 +81,7 @@ def main() -> None:
     parser.add_argument("--legacy-config", help="旧CLI配置JSON，例如 /root/.openclaw/yunxiao-task-config.json")
     parser.add_argument("--security-token", default=os.getenv("ALIBABA_CLOUD_SECURITY_TOKEN") or os.getenv("ALIYUN_SECURITY_TOKEN"))
     parser.add_argument("--endpoint", default=os.getenv("YUNXIAO_OPENAPI_ENDPOINT"))
-    parser.add_argument("--project-name", required=True, help="业务项目名称，例如 jdb-school-crm")
+    parser.add_argument("--project-name", help="业务项目名称，例如 jdb-school-crm")
     parser.add_argument("--organization-id", help="云效企业/组织 ID")
     parser.add_argument("--project-id", help="云效项目 ID 或 spaceIdentifier")
     parser.add_argument("--sprint-id", help="云效迭代 ID，旧接口可选")
@@ -130,7 +135,12 @@ def main() -> None:
     parser.add_argument(
         "--member-only",
         action="store_true",
-        help="只维护 adapter_yunxiao_project_member，不修改账号或项目映射",
+        help="只维护云效人员及项目人员关联，不修改账号或项目映射",
+    )
+    parser.add_argument(
+        "--person-only",
+        action="store_true",
+        help="只维护 adapter_yunxiao_member，不维护项目关联",
     )
     args = parser.parse_args()
     if not args.endpoint:
@@ -147,37 +157,43 @@ def main() -> None:
         raise SystemExit("Database env is not configured")
     if not args.account_name:
         raise SystemExit("Yunxiao account name is missing")
+    if args.person_only and args.member_only:
+        raise SystemExit("Use --person-only or --member-only, not both")
+    if args.person_only and (not args.member_name or not args.member_account_id):
+        raise SystemExit("Set --member-name and --member-account-id when --person-only is used")
     if args.member_only and (not args.member_name or not args.member_account_id):
         raise SystemExit("Set --member-name and --member-account-id when --member-only is used")
-    if not args.member_only and not args.project_id:
+    if not args.person_only and not args.project_name:
+        raise SystemExit("Yunxiao project name is missing; set --project-name")
+    if not args.member_only and not args.person_only and not args.project_id:
         raise SystemExit("Yunxiao project id is missing; set --project-id")
-    if not args.member_only and not args.skip_account and args.auth_type == "acs_ak" and not args.access_key_id:
+    if not args.member_only and not args.person_only and not args.skip_account and args.auth_type == "acs_ak" and not args.access_key_id:
         raise SystemExit("Yunxiao access key id is missing; set ALIBABA_CLOUD_ACCESS_KEY_ID or --access-key-id")
-    if not args.member_only and not args.skip_account and args.auth_type == "acs_ak" and not args.access_key_secret:
+    if not args.member_only and not args.person_only and not args.skip_account and args.auth_type == "acs_ak" and not args.access_key_secret:
         raise SystemExit(
             "Yunxiao access key secret is missing; set ALIBABA_CLOUD_ACCESS_KEY_SECRET or --access-key-secret"
         )
-    if not args.member_only and not args.skip_account and args.auth_type == "legacy_token" and not args.legacy_token:
+    if not args.member_only and not args.person_only and not args.skip_account and args.auth_type == "legacy_token" and not args.legacy_token:
         raise SystemExit("Yunxiao legacy token is missing; set YUNXIAO_TOKEN, --legacy-token, or --legacy-config")
-    if not args.member_only and not args.skip_account and args.auth_type == "personal_token" and not args.legacy_token:
+    if not args.member_only and not args.person_only and not args.skip_account and args.auth_type == "personal_token" and not args.legacy_token:
         raise SystemExit("Yunxiao personal token is missing; set YUNXIAO_PERSONAL_TOKEN, YUNXIAO_TOKEN, or --legacy-token")
-    if not args.member_only and not args.organization_id:
+    if not args.member_only and not args.person_only and not args.organization_id:
         raise SystemExit("Yunxiao organization id is missing; set --organization-id or --legacy-config")
-    if not args.member_only and not args.workitem_type_identifier:
+    if not args.member_only and not args.person_only and not args.workitem_type_identifier:
         raise SystemExit(
             "Yunxiao workitem type identifier is missing; set --workitem-type-identifier or --legacy-config"
         )
     if bool(args.member_name) != bool(args.member_account_id):
         raise SystemExit("Set --member-name and --member-account-id together")
-    if not args.member_only and not args.default_assignee and args.member_default and args.member_account_id:
+    if not args.member_only and not args.person_only and not args.default_assignee and args.member_default and args.member_account_id:
         args.default_assignee = args.member_account_id
-    if not args.member_only and not args.default_assignee:
+    if not args.member_only and not args.person_only and not args.default_assignee:
         raise SystemExit("Yunxiao default assignee is missing; set --default-assignee or --member-default with member")
 
     db.ensure_schema()
     with db.connect() as conn:
         with conn.cursor() as cursor:
-            if not args.member_only and not args.skip_account:
+            if not args.member_only and not args.person_only and not args.skip_account:
                 cursor.execute(
                     """
                     INSERT INTO adapter_yunxiao_account_config (
@@ -211,7 +227,7 @@ def main() -> None:
                         args.remark or None,
                     ),
                 )
-            if not args.member_only:
+            if not args.member_only and not args.person_only:
                 cursor.execute(
                     """
                     INSERT INTO adapter_yunxiao_project_config (
@@ -282,7 +298,35 @@ def main() -> None:
                     ),
                 )
             if args.member_name and args.member_account_id:
-                if args.member_default:
+                cursor.execute(
+                    """
+                    INSERT INTO adapter_yunxiao_member (
+                        member_name,
+                        yunxiao_account_id,
+                        enabled,
+                        remark
+                    )
+                    VALUES (%s, %s, 1, %s)
+                    ON DUPLICATE KEY UPDATE
+                        member_name = VALUES(member_name),
+                        enabled = 1,
+                        remark = VALUES(remark)
+                    """,
+                    (
+                        args.member_name,
+                        args.member_account_id,
+                        args.remark or None,
+                    ),
+                )
+                if not args.person_only and args.member_default:
+                    cursor.execute(
+                        """
+                        UPDATE adapter_yunxiao_project_member_relation
+                        SET is_default = 0
+                        WHERE LOWER(project_name) = LOWER(%s)
+                        """,
+                        (args.project_name,),
+                    )
                     cursor.execute(
                         """
                         UPDATE adapter_yunxiao_project_member
@@ -291,32 +335,62 @@ def main() -> None:
                         """,
                         (args.project_name,),
                     )
-                cursor.execute(
-                    """
-                    INSERT INTO adapter_yunxiao_project_member (
-                        project_name,
-                        member_name,
-                        yunxiao_account_id,
-                        is_default,
-                        enabled,
-                        remark
+                if not args.person_only:
+                    cursor.execute(
+                        """
+                        INSERT INTO adapter_yunxiao_project_member_relation (
+                            project_name,
+                            yunxiao_account_id,
+                            is_default,
+                            enabled,
+                            remark
+                        )
+                        VALUES (%s, %s, %s, 1, %s)
+                        ON DUPLICATE KEY UPDATE
+                            is_default = VALUES(is_default),
+                            enabled = 1,
+                            remark = VALUES(remark)
+                        """,
+                        (
+                            args.project_name,
+                            args.member_account_id,
+                            1 if args.member_default else 0,
+                            args.remark or None,
+                        ),
                     )
-                    VALUES (%s, %s, %s, %s, 1, %s)
-                    ON DUPLICATE KEY UPDATE
-                        member_name = VALUES(member_name),
-                        yunxiao_account_id = VALUES(yunxiao_account_id),
-                        is_default = VALUES(is_default),
-                        enabled = 1,
-                        remark = VALUES(remark)
-                    """,
-                    (
-                        args.project_name,
-                        args.member_name,
-                        args.member_account_id,
-                        1 if args.member_default else 0,
-                        args.remark or None,
-                    ),
-                )
+                    cursor.execute(
+                        """
+                        INSERT INTO adapter_yunxiao_project_member (
+                            project_name,
+                            member_name,
+                            yunxiao_account_id,
+                            is_default,
+                            enabled,
+                            remark
+                        )
+                        VALUES (%s, %s, %s, %s, 1, %s)
+                        ON DUPLICATE KEY UPDATE
+                            member_name = VALUES(member_name),
+                            yunxiao_account_id = VALUES(yunxiao_account_id),
+                            is_default = VALUES(is_default),
+                            enabled = 1,
+                            remark = VALUES(remark)
+                        """,
+                        (
+                            args.project_name,
+                            args.member_name,
+                            args.member_account_id,
+                            1 if args.member_default else 0,
+                            args.remark or None,
+                        ),
+                    )
+
+    if args.person_only:
+        print(
+            "yunxiao person upserted: "
+            f"memberName={args.member_name}, accountId={args.member_account_id}"
+        )
+        return
 
     if args.member_only:
         default_text = "true" if args.member_default else "false"

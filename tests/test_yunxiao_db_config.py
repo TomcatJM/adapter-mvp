@@ -216,9 +216,10 @@ class YunxiaoDbConfigTest(unittest.TestCase):
         self.assertEqual(result["accountId"], "user-jzm")
         self.assertTrue(result["isDefault"])
         sql = cursor.execute.call_args.args[0]
-        self.assertIn("adapter_yunxiao_project_member", sql)
-        self.assertIn("LOWER(member_name)", sql)
-        self.assertIn("yunxiao_account_id", sql)
+        self.assertIn("adapter_yunxiao_project_member_relation", sql)
+        self.assertIn("adapter_yunxiao_member", sql)
+        self.assertIn("LOWER(member.member_name)", sql)
+        self.assertIn("member.yunxiao_account_id", sql)
 
     def test_find_default_yunxiao_project_member_reads_default_member(self) -> None:
         cursor = MagicMock()
@@ -243,8 +244,43 @@ class YunxiaoDbConfigTest(unittest.TestCase):
         self.assertEqual(result["name"], "姬志猛")
         self.assertEqual(result["accountId"], "user-jzm")
         sql = cursor.execute.call_args.args[0]
-        self.assertIn("is_default = 1", sql)
-        self.assertIn("ORDER BY updated_at DESC", sql)
+        self.assertIn("adapter_yunxiao_project_member_relation", sql)
+        self.assertIn("rel.is_default = 1", sql)
+        self.assertIn("ORDER BY rel.updated_at DESC", sql)
+
+    def test_find_yunxiao_project_member_falls_back_to_legacy_project_member_table(self) -> None:
+        cursor = MagicMock()
+        cursor.__enter__.return_value = cursor
+        cursor.__exit__.return_value = False
+        cursor.fetchone.side_effect = [
+            None,
+            {
+                "project_name": "jdb-school-crm",
+                "member_name": "姬志猛",
+                "yunxiao_account_id": "user-jzm",
+                "is_default": 1,
+                "enabled": 1,
+                "remark": "legacy owner",
+            },
+        ]
+
+        with patch("app.db.configured", return_value=True), patch("app.db.ensure_schema"), patch(
+            "app.db.connect", return_value=_FakeConnection(cursor)
+        ):
+            result = db.find_yunxiao_project_member("jdb-school-crm", "姬志猛")
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result["projectName"], "jdb-school-crm")
+        self.assertEqual(result["name"], "姬志猛")
+        self.assertEqual(result["accountId"], "user-jzm")
+        self.assertTrue(result["isDefault"])
+        self.assertEqual(cursor.execute.call_count, 2)
+        first_sql = cursor.execute.call_args_list[0].args[0]
+        second_sql = cursor.execute.call_args_list[1].args[0]
+        self.assertIn("adapter_yunxiao_project_member_relation", first_sql)
+        self.assertIn("adapter_yunxiao_project_member", second_sql)
+        self.assertIn("LOWER(member_name)", second_sql)
 
 
 if __name__ == "__main__":

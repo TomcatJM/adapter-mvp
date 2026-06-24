@@ -12,7 +12,7 @@
 - 本地 secret 文件此前已确认没有 `YUNXIAO_*` / `ALIBABA_CLOUD_*` / `ALIYUN_*` 云效创建所需配置，所以真实联调需要后续补配置。
 - 云效配置已改为 DB 优先：`adapter_yunxiao_account_config` 维护 AK/Secret/Endpoint，`adapter_yunxiao_project_config` 维护多个业务项目到云效组织、项目、工作项类型和负责人的映射。
 - MySQL 已配置时，云效创建必须解析出项目名并命中项目映射；缺映射会明确失败并记录 workflow 错误，不会使用默认云效项目兜底。
-- 云效负责人不再只依赖项目表单个 `default_assignee` 字段；新增 `adapter_yunxiao_project_member` 维护项目成员姓名、云效账号 ID 和默认标识。创建工作项时，指定负责人必须命中人员表；未指定时优先取人员表默认人，旧 `default_assignee` 仅作为兼容兜底。
+- 云效负责人不再只依赖项目表单个 `default_assignee` 字段；新增 `adapter_yunxiao_member` 维护全局人员、`adapter_yunxiao_project_member_relation` 维护项目关联和默认标识，旧 `adapter_yunxiao_project_member` 作为兼容读写表。创建工作项时，指定负责人必须命中人员配置；未指定时优先取项目默认人，旧 `default_assignee` 仅作为最终兼容兜底。
 
 ## 2026-06-22
 

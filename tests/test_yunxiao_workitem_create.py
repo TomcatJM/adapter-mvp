@@ -360,7 +360,8 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
                 create_yunxiao_workitem(workflow, "codex")
 
         self.assertIn("Yunxiao assignee config missing", str(raised.exception))
-        self.assertIn("adapter_yunxiao_project_member", str(raised.exception))
+        self.assertIn("adapter_yunxiao_member", str(raised.exception))
+        self.assertIn("adapter_yunxiao_project_member_relation", str(raised.exception))
 
     def test_create_workitem_resolves_multiple_projects_from_workflow_context(self) -> None:
         from app.yunxiao import create_yunxiao_workitem

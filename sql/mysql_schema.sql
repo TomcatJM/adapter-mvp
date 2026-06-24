@@ -98,6 +98,35 @@ CREATE TABLE IF NOT EXISTS adapter_yunxiao_project_config (
     KEY idx_adapter_yunxiao_project_id (project_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter云效项目映射配置表';
 
+CREATE TABLE IF NOT EXISTS adapter_yunxiao_member (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
+    member_name VARCHAR(128) NOT NULL COMMENT '人员姓名，例如 姬志猛',
+    yunxiao_account_id VARCHAR(128) NOT NULL COMMENT '云效账号ID',
+    enabled TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否启用：1启用，0停用',
+    remark VARCHAR(512) NULL COMMENT '备注',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY uk_adapter_yunxiao_member_account (yunxiao_account_id),
+    KEY idx_adapter_yunxiao_member_name (member_name),
+    KEY idx_adapter_yunxiao_member_enabled (enabled)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter云效人员表';
+
+CREATE TABLE IF NOT EXISTS adapter_yunxiao_project_member_relation (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
+    project_name VARCHAR(128) NOT NULL COMMENT '业务项目名称，例如 jdb-school-crm',
+    yunxiao_account_id VARCHAR(128) NOT NULL COMMENT '云效账号ID，关联adapter_yunxiao_member.yunxiao_account_id',
+    is_default TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否项目默认负责人：1是，0否',
+    enabled TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否启用：1启用，0停用',
+    remark VARCHAR(512) NULL COMMENT '备注',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY uk_adapter_yunxiao_project_member_relation (project_name, yunxiao_account_id),
+    KEY idx_adapter_yunxiao_project_member_relation_default (project_name, is_default, enabled),
+    KEY idx_adapter_yunxiao_project_member_relation_account (yunxiao_account_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter云效项目人员关联表';
+
 CREATE TABLE IF NOT EXISTS adapter_yunxiao_project_member (
     id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
     project_name VARCHAR(128) NOT NULL COMMENT '业务项目名称，例如 jdb-school-crm',

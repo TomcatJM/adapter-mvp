@@ -676,7 +676,7 @@ def _db_required(config: dict[str, Any], purpose: str) -> dict[str, Any]:
     }
     if purpose == "create":
         required["adapter_yunxiao_project_config.workitem_type_identifier"] = config["workitemTypeIdentifier"]
-        required["adapter_yunxiao_project_member.default_account_id"] = config["assignee"]
+        required["adapter_yunxiao_project_member_relation.default_account_id"] = config["assignee"]
     if config.get("authType") == "legacy_token":
         required["adapter_yunxiao_account_config.legacy_token"] = config["legacyToken"]
     elif config.get("authType") == "personal_token":
@@ -741,7 +741,8 @@ def _resolve_db_assignee(project_config: dict[str, Any], workflow_project_name: 
             raise YunxiaoError(
                 "Yunxiao assignee config missing: "
                 f"projectName={project_name}, assignee={requested}. "
-                "Configure adapter_yunxiao_project_member with member_name or yunxiao_account_id."
+                "Configure adapter_yunxiao_member and adapter_yunxiao_project_member_relation "
+                "with member_name or yunxiao_account_id."
             )
         return {
             "name": member.get("name"),
