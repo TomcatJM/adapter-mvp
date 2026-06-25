@@ -139,6 +139,53 @@ class WorkflowP0Test(unittest.TestCase):
         self.assertEqual(result["workflow"]["context"]["requirement"]["summary"], "新增接口")
         self.assertEqual(result["workflow"]["context"]["requirement"]["assigneeName"], "姬志猛")
 
+    def test_submit_requirement_preserves_structured_demands(self) -> None:
+        from app.models import WorkflowRequirementRequest
+        from app.workflow import submit_requirement
+
+        workflow = {"workflowId": "wf-test-2", "status": "DOC_READ", "context": {}}
+
+        def fake_update(**kwargs):
+            return {**workflow, "status": "REQUIREMENT_PARSED", "context": kwargs["context"]}
+
+        with patch("app.workflow.db.find_workflow_instance", return_value=workflow), patch(
+            "app.workflow.db.update_workflow_requirement", side_effect=fake_update
+        ):
+            result = submit_requirement(
+                "wf-test-2",
+                WorkflowRequirementRequest(
+                    documentTitle="校务3-1.adoc",
+                    version="V1.0.0",
+                    sourceUrl="https://alidocs.dingtalk.com/i/nodes/ndMj49yWjXn1ddY0cRLQpyZGJ3pmz5aA",
+                    demands=[
+                        {
+                            "demandIndex": 1,
+                            "title": "需求一",
+                            "description": "描述：1111111",
+                            "items": [
+                                {
+                                    "itemIndex": 1,
+                                    "title": "任务一",
+                                    "parentDemandIndex": 1,
+                                    "parentDemandTitle": "需求一",
+                                    "contentLines": ["创建一条学生信息", "姓名必填", "手机号必填"],
+                                }
+                            ],
+                        }
+                    ],
+                    summary=None,
+                ),
+            )
+
+        requirement = result["workflow"]["context"]["requirement"]
+        self.assertEqual(requirement["documentTitle"], "校务3-1.adoc")
+        self.assertEqual(requirement["version"], "V1.0.0")
+        self.assertEqual(requirement["sourceUrl"], "https://alidocs.dingtalk.com/i/nodes/ndMj49yWjXn1ddY0cRLQpyZGJ3pmz5aA")
+        self.assertEqual(requirement["demands"][0]["demandIndex"], 1)
+        self.assertEqual(requirement["demands"][0]["description"], "描述：1111111")
+        self.assertEqual(requirement["demands"][0]["items"][0]["parentDemandIndex"], 1)
+        self.assertEqual(requirement["demands"][0]["items"][0]["contentLines"][0], "创建一条学生信息")
+
     def test_submit_coding_result_moves_to_code_submitted(self) -> None:
         from app.models import WorkflowCodingResultRequest
         from app.workflow import submit_coding_result

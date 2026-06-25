@@ -2,6 +2,13 @@
 
 轻量级 Adapter 网关 MVP，用于受控自动化、云效回调接入、远端动作预览/执行与审计留存。
 
+## 文档入口
+
+- [使用手册](delivery/docs/使用手册.md)
+- [架构设计](delivery/docs/架构设计.md)
+- [部署与配置](delivery/docs/部署与配置.md)
+- [文档索引](delivery/docs/文档索引.md)
+
 ## 1. 功能说明
 
 - 从 `config/hosts.masked.json` 加载已脱敏的主机清单。
@@ -213,6 +220,7 @@ POST /workflow/{workflow_id}/coding-result
 
 - 优先使用 `WORKFLOW_ID` / `workflowId` 精确绑定。
 - 未传 `WORKFLOW_ID` 时，依次尝试云效工作项 ID、提交说明里的 `WORKFLOW_ID` / `YUNXIAO_TASK_DISPLAY_ID` / `YUNXIAO_TASK_ID`、`pipelineId + buildNumber`、`branchName + commitId`。`YUNXIAO_TASK_DISPLAY_ID` 优先填页面展示 ID，例如 `VEGZ-1186`；`云效id`、`云效任务` 等中文 key 和旧的 `YUNXIAO_TASK_ID` 仍兼容。
+- 这些任务字段优先从本次流水线对应的 `commitMessage` 读取，不依赖分支最新提交。
 - 仍未命中时，用 `pipelineId` 解析项目；同项目当前只有一个可接收流水线事件的活跃 workflow 时，才用 `project_active_workflow` 绑定。
 - 项目级绑定支持 `jdb-school-crm` 和 `校CRM` 这类同云效 `organization_id/project_id` 的项目别名。
 - 如果提交说明里显式写了 `WORKFLOW_ID`、`YUNXIAO_TASK_DISPLAY_ID`、`云效id` / `云效任务` 这类云效中文 key 或 `YUNXIAO_TASK_ID` 但查不到 workflow，Adapter 会停止后续兜底，避免误绑定到其他活跃需求。
@@ -231,7 +239,7 @@ DELIVERY_MODE=release
 OPENAPI_URL=https://...
 ```
 
-提交说明按 [提交说明模板](docs/提交说明模板.md) 编写。流水线应读取本次构建 `commitId` 对应的提交说明并通过 `COMMIT_MESSAGE` / `commitMessage` 传给 Adapter，不要读取分支最新提交。
+提交说明按 [提交说明模板](delivery/docs/提交说明模板.md) 编写。流水线应读取本次构建 `commitId` 对应的提交说明并通过 `COMMIT_MESSAGE` / `commitMessage` 传给 Adapter，不要读取分支最新提交。
 
 ## 8. 云效回调示例
 
@@ -326,7 +334,7 @@ python scripts\init_mysql_schema.py --source D:\document\up\mysql.xlsx
 如果运行时数据库账号没有 `CREATE` 权限，请让 DBA 执行：
 
 ```text
-sql/mysql_schema.sql
+delivery/sql/mysql_schema.sql
 ```
 
 ## 12. 文档入口
@@ -334,13 +342,13 @@ sql/mysql_schema.sql
 主交接文档：
 
 ```text
-docs/交付与接口留存文档.md
+delivery/docs/交付与接口留存文档.md
 ```
 
 API 交接文档：
 
 ```text
-docs/接口文档.md
+delivery/docs/接口文档.md
 ```
 
 
@@ -348,7 +356,7 @@ docs/接口文档.md
 云效 execute 审批链路详细配置见主交接文档：
 
 ```text
-docs/交付与接口留存文档.md#13-云效-execute-审批链路配置
+delivery/docs/交付与接口留存文档.md#13-云效-execute-审批链路配置
 ```
 
 推荐节点顺序：

@@ -4,6 +4,7 @@ from fastapi import Header, HTTPException, status
 
 
 def require_api_token(authorization: str | None = Header(default=None)) -> None:
+    """要求API令牌。"""
     expected = os.getenv("ADAPTER_API_TOKEN")
     if not expected:
         return
@@ -22,6 +23,7 @@ def require_api_token(authorization: str | None = Header(default=None)) -> None:
 
 
 def require_execute_approval(params: dict) -> None:
+    """要求执行审批。"""
     approval_id = params.get("approvalId")
     approved = params.get("approved") is True
     if approval_id or approved:

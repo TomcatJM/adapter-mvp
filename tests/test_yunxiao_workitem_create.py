@@ -48,6 +48,8 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
         self.assertEqual(payload["category"], "Req")
         self.assertEqual(payload["workitemTypeIdentifier"], "type-req")
         self.assertIn("Workflow：wf-test-1", payload["description"])
+        self.assertIn("结构化需求：", payload["description"])
+        self.assertIn("- 未提供", payload["description"])
         self.assertIn("POST /crm/client/follow-record", payload["description"])
         self.assertNotIn("secret-value", payload["description"])
 
@@ -231,6 +233,165 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
         self.assertNotIn("workitemTypeIdentifier", captured[0]["payload"])
         self.assertEqual(captured[0]["config"]["personalToken"], "pat-secret")
         self.assertEqual(captured[1]["path"], "/oapi/v1/projex/organizations/org-pat/workitems/YX-PAT-1")
+
+    def test_create_workitem_tree_creates_parent_and_child_tasks(self) -> None:
+        from app.yunxiao import create_yunxiao_workitem
+
+        workflow = _workflow()
+        workflow["context"]["requirement"] = {
+            "summary": "新增客户跟进记录接口",
+            "demands": [
+                {
+                    "demandIndex": 1,
+                    "title": "需求一",
+                    "description": "描述：1111111",
+                    "items": [
+                        {
+                            "itemIndex": 1,
+                            "title": "任务一",
+                            "parentDemandIndex": 1,
+                            "parentDemandTitle": "需求一",
+                            "ownerName": "姬志猛",
+                            "contentLines": ["创建一条学生信息", "姓名必填", "手机号必填"],
+                        }
+                    ],
+                }
+            ],
+        }
+        captured = []
+
+        def fake_request(**kwargs):
+            captured.append(kwargs)
+            subject = kwargs["payload"]["subject"]
+            if subject == "需求一":
+                return {"success": True, "workitemIdentifier": "REQ-ROOT", "requestId": "req-1"}
+            if subject == "任务一":
+                self.assertEqual(kwargs["payload"]["parentIdentifier"], "REQ-ROOT")
+                return {"success": True, "workitemIdentifier": "TASK-1", "requestId": "req-2"}
+            raise AssertionError(f"unexpected subject: {subject}")
+
+        with patch.dict(os.environ, ENV, clear=True), patch(
+            "app.yunxiao.db.find_yunxiao_project_member",
+            side_effect=lambda project_name, member_name: {
+                "projectName": project_name,
+                "name": member_name,
+                "accountId": "user-jzm",
+                "isDefault": False,
+            }
+            if member_name == "姬志猛"
+            else None,
+        ), patch("app.yunxiao.db.find_default_yunxiao_project_member", return_value=None), patch(
+            "app.yunxiao._request_yunxiao_openapi", side_effect=fake_request
+        ):
+            result = create_yunxiao_workitem(workflow, "codex")
+
+        self.assertEqual(result["workitemIdentifier"], "REQ-ROOT")
+        self.assertEqual(result["demandCount"], 1)
+        self.assertEqual(result["taskCount"], 1)
+        self.assertEqual(result["taskIdentifiers"], ["TASK-1"])
+        self.assertEqual(result["demands"][0]["workitemIdentifier"], "REQ-ROOT")
+        self.assertEqual(result["demands"][0]["items"][0]["workitemIdentifier"], "TASK-1")
+        self.assertEqual([item["payload"]["subject"] for item in captured], ["需求一", "任务一"])
+        self.assertEqual(captured[1]["payload"]["parentIdentifier"], "REQ-ROOT")
+        self.assertIn("主要内容：", captured[1]["payload"]["description"])
+
+    def test_create_workitem_tree_missing_requested_owner_fails_explicitly(self) -> None:
+        from app.yunxiao import YunxiaoError, create_yunxiao_workitem
+
+        workflow = _workflow()
+        workflow["context"]["requirement"] = {
+            "summary": "新增客户跟进记录接口",
+            "demands": [
+                {
+                    "demandIndex": 1,
+                    "title": "需求一",
+                    "description": "描述：1111111",
+                    "items": [
+                        {
+                            "itemIndex": 1,
+                            "title": "任务一",
+                            "parentDemandIndex": 1,
+                            "parentDemandTitle": "需求一",
+                            "ownerName": "不存在的人",
+                            "contentLines": ["创建一条学生信息"],
+                        }
+                    ],
+                }
+            ],
+        }
+        captured = []
+
+        def fake_request(**kwargs):
+            captured.append(kwargs)
+            subject = kwargs["payload"]["subject"]
+            if subject == "需求一":
+                return {"success": True, "workitemIdentifier": "REQ-ROOT", "requestId": "req-1"}
+            raise AssertionError(f"unexpected subject: {subject}")
+
+        with patch.dict(os.environ, ENV, clear=True), patch("app.yunxiao.db.find_yunxiao_project_member", return_value=None), patch(
+            "app.yunxiao.db.find_default_yunxiao_project_member",
+            return_value={
+                "projectName": "jdb-school-crm",
+                "name": "默认负责人",
+                "accountId": "user-default",
+                "isDefault": True,
+            },
+        ), patch("app.yunxiao._request_yunxiao_openapi", side_effect=fake_request):
+            with self.assertRaises(YunxiaoError) as raised:
+                create_yunxiao_workitem(workflow, "codex")
+
+        self.assertIn("Yunxiao assignee config missing", str(raised.exception))
+        self.assertEqual([item["payload"]["subject"] for item in captured], ["需求一"])
+
+    def test_create_workitem_tree_failure_exposes_partial_result(self) -> None:
+        from app.yunxiao import YunxiaoError, create_yunxiao_workitem
+
+        workflow = _workflow()
+        workflow["context"]["requirement"] = {
+            "summary": "新增客户跟进记录接口",
+            "demands": [
+                {
+                    "demandIndex": 1,
+                    "title": "需求一",
+                    "description": "描述：1111111",
+                    "items": [
+                        {
+                            "itemIndex": 1,
+                            "title": "任务一",
+                            "parentDemandIndex": 1,
+                            "parentDemandTitle": "需求一",
+                            "ownerName": "不存在的人",
+                            "contentLines": ["创建一条学生信息"],
+                        }
+                    ],
+                }
+            ],
+        }
+
+        def fake_request(**kwargs):
+            subject = kwargs["payload"]["subject"]
+            if subject == "需求一":
+                return {"success": True, "workitemIdentifier": "REQ-ROOT", "requestId": "req-1"}
+            raise AssertionError(f"unexpected subject: {subject}")
+
+        with patch.dict(os.environ, ENV, clear=True), patch("app.yunxiao.db.find_yunxiao_project_member", return_value=None), patch(
+            "app.yunxiao.db.find_default_yunxiao_project_member",
+            return_value={
+                "projectName": "jdb-school-crm",
+                "name": "默认负责人",
+                "accountId": "user-default",
+                "isDefault": True,
+            },
+        ), patch("app.yunxiao._request_yunxiao_openapi", side_effect=fake_request):
+            with self.assertRaises(YunxiaoError) as raised:
+                create_yunxiao_workitem(workflow, "codex")
+
+        self.assertIn("Yunxiao requirement tree creation failed", str(raised.exception))
+        partial_result = getattr(raised.exception, "partial_result", None)
+        self.assertIsNotNone(partial_result)
+        self.assertEqual(partial_result["demandCount"], 1)
+        self.assertEqual(partial_result["taskCount"], 0)
+        self.assertEqual(partial_result["taskIdentifiers"], [])
 
     def test_create_workitem_uses_default_project_member_before_legacy_default_assignee(self) -> None:
         from app.yunxiao import create_yunxiao_workitem
@@ -590,6 +751,35 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
         self.assertEqual(captured["status"], "REQUIREMENT_PARSED")
         self.assertEqual(captured["event_type"], "yunxiao_workitem_create_failed")
         self.assertEqual(captured["event_payload"]["step"], "yunxiao_workitem_create")
+
+    def test_advance_requirement_parsed_records_partial_tree_checkpoint_on_create_failure(self) -> None:
+        from app.models import WorkflowAdvanceRequest
+        from app.workflow import WorkflowError, advance_workflow
+        from app.yunxiao import YunxiaoError
+
+        workflow = _workflow()
+        captured = {}
+        exc = YunxiaoError("Yunxiao requirement tree creation failed")
+        exc.partial_result = {
+            "demandCount": 1,
+            "taskCount": 1,
+            "taskIdentifiers": ["TASK-1"],
+        }
+
+        def fake_record(**kwargs):
+            captured.update(kwargs)
+            return {**workflow, "lastError": kwargs["error"], "retryCount": 1}
+
+        with patch("app.workflow.db.find_workflow_instance", return_value=workflow), patch(
+            "app.workflow.create_yunxiao_workitem", side_effect=exc
+        ), patch("app.workflow.db.record_workflow_error", side_effect=fake_record):
+            with self.assertRaises(WorkflowError):
+                advance_workflow("wf-test-1", WorkflowAdvanceRequest(operator="codex"))
+
+        self.assertEqual(captured["status"], "REQUIREMENT_PARSED")
+        self.assertEqual(captured["event_type"], "yunxiao_workitem_create_failed")
+        self.assertEqual(captured["event_payload"]["step"], "yunxiao_workitem_create")
+        self.assertEqual(captured["event_payload"]["partialResult"]["taskIdentifiers"], ["TASK-1"])
 
 
 def _workflow() -> dict:

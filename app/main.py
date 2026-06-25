@@ -69,6 +69,7 @@ YUNXIAO_RUNNING_STATUSES = {"RUNNING", "START", "STARTED", "IN_PROGRESS", "PROCE
 
 
 class DingTalkDocReadRequest(BaseModel):
+    """DingTalkDocReadRequest 请求模型。"""
     url: str | None = Field(default=None, description="DingTalk/Alidocs URL")
     nodeId: str | None = Field(default=None, description="DingTalk/Alidocs node id")
     workbookId: str | None = Field(default=None, description="Explicit workbook id for axls docs")
@@ -80,6 +81,7 @@ class DingTalkDocReadRequest(BaseModel):
 
 
 class DingTalkDocConfigRequest(BaseModel):
+    """DingTalkDocConfigRequest 请求模型。"""
     configName: str = Field(default="default", description="DingTalk document config name")
     appName: str | None = Field(default=None, description="Existing DingTalk app name")
     operatorId: str | None = Field(default=None, description="DingTalk userId used to read documents")
@@ -99,6 +101,7 @@ class DingTalkDocConfigRequest(BaseModel):
 
 
 class DingTalkResolveOperatorRequest(BaseModel):
+    """DingTalkResolveOperatorRequest 请求模型。"""
     userId: str = Field(description="DingTalk contact userId to resolve")
     configName: str | None = Field(default=None, description="DingTalk document config name")
     timeout: int = Field(default=60, ge=5, le=180)
@@ -107,11 +110,13 @@ class DingTalkResolveOperatorRequest(BaseModel):
 
 @app.get("/health", summary="健康检查", tags=["健康检查"])
 def health() -> dict[str, str]:
+    """健康检查接口。"""
     return {"status": "ok"}
 
 
 @app.get("/adapter/openapi/{project_name}", summary="获取清洗后的 OpenAPI", tags=["OpenAPI"])
 def adapter_openapi(project_name: str, upstreamUrl: str | None = None, signature: str | None = None):
+    """返回 Adapter OpenAPI 说明。"""
     try:
         upstream_url = verify_signed_upstream_url(project_name, upstreamUrl, signature)
         return fetch_sanitized_openapi(project_name, upstream_url=upstream_url)
@@ -123,6 +128,7 @@ def adapter_openapi(project_name: str, upstreamUrl: str | None = None, signature
 
 @app.post("/adapter/dingtalk/read", summary="读取钉钉文档", tags=["钉钉文档"], dependencies=[Depends(require_api_token)])
 def adapter_dingtalk_read(request: DingTalkDocReadRequest):
+    """钉钉/Alidocs 文档读取接口。"""
     try:
         return read_dingtalk_doc(
             url=request.url,
@@ -145,6 +151,7 @@ def adapter_dingtalk_read(request: DingTalkDocReadRequest):
     dependencies=[Depends(require_api_token)],
 )
 def adapter_dingtalk_config(request: DingTalkDocConfigRequest):
+    """钉钉文档读取配置接口。"""
     try:
         return {
             "ok": True,
@@ -166,6 +173,7 @@ def adapter_dingtalk_config(request: DingTalkDocConfigRequest):
     dependencies=[Depends(require_api_token)],
 )
 def adapter_dingtalk_resolve_operator(request: DingTalkResolveOperatorRequest):
+    """钉钉文档操作者解析接口。"""
     try:
         result = resolve_dingtalk_operator(
             user_id=request.userId,
@@ -195,6 +203,7 @@ def adapter_dingtalk_resolve_operator(request: DingTalkResolveOperatorRequest):
 
 @app.post("/workflow/start", summary="创建交付工作流", tags=["交付工作流"], dependencies=[Depends(require_api_token)])
 def workflow_start(request: WorkflowStartRequest):
+    """创建工作流实例。"""
     try:
         workflow = start_workflow(request)
         return {
@@ -210,6 +219,7 @@ def workflow_start(request: WorkflowStartRequest):
 
 @app.get("/workflow/{workflow_id}", summary="查询交付工作流", tags=["交付工作流"], dependencies=[Depends(require_api_token)])
 def workflow_get(workflow_id: str, eventLimit: int = 50):
+    """查询工作流实例。"""
     try:
         return get_workflow(workflow_id, eventLimit)
     except WorkflowError as exc:
@@ -225,6 +235,7 @@ def workflow_get(workflow_id: str, eventLimit: int = 50):
     dependencies=[Depends(require_api_token)],
 )
 def workflow_advance(workflow_id: str, request: WorkflowAdvanceRequest):
+    """推进工作流状态。"""
     try:
         return advance_workflow(workflow_id, request)
     except WorkflowError as exc:
@@ -242,6 +253,7 @@ def workflow_advance(workflow_id: str, request: WorkflowAdvanceRequest):
     dependencies=[Depends(require_api_token)],
 )
 def workflow_requirement(workflow_id: str, request: WorkflowRequirementRequest):
+    """提交结构化需求。"""
     try:
         return submit_requirement(workflow_id, request)
     except WorkflowError as exc:
@@ -259,6 +271,7 @@ def workflow_requirement(workflow_id: str, request: WorkflowRequirementRequest):
     dependencies=[Depends(require_api_token)],
 )
 def workflow_coding_result(workflow_id: str, request: WorkflowCodingResultRequest):
+    """提交编码结果。"""
     try:
         return submit_coding_result(workflow_id, request)
     except WorkflowError as exc:
@@ -276,6 +289,7 @@ def workflow_coding_result(workflow_id: str, request: WorkflowCodingResultReques
     dependencies=[Depends(require_api_token)],
 )
 def workflow_retry(workflow_id: str, request: WorkflowRetryRequest):
+    """重试失败的工作流。"""
     try:
         return retry_workflow(workflow_id, request)
     except WorkflowError as exc:
@@ -293,6 +307,7 @@ def workflow_retry(workflow_id: str, request: WorkflowRetryRequest):
     dependencies=[Depends(require_api_token)],
 )
 def workflow_resolve(workflow_id: str, request: WorkflowResolveRequest):
+    """处理人工兜底的工作流。"""
     try:
         return resolve_workflow(workflow_id, request)
     except WorkflowError as exc:
@@ -305,6 +320,7 @@ def workflow_resolve(workflow_id: str, request: WorkflowResolveRequest):
 
 @app.post("/adapter/preview", summary="预览适配器操作", tags=["适配器执行"], dependencies=[Depends(require_api_token)])
 def preview(request: AdapterRequest):
+    """预览动作，不执行真实远端操作。"""
     try:
         adapter = registry.find(request.system, request.action)
         result = adapter.preview(request)
@@ -322,6 +338,7 @@ def preview(request: AdapterRequest):
     dependencies=[Depends(require_api_token)],
 )
 def execute(request: AdapterRequest):
+    """执行动作。"""
     try:
         require_execute_approval(request.params)
         adapter = registry.find(request.system, request.action)
@@ -341,6 +358,7 @@ def execute(request: AdapterRequest):
     dependencies=[Depends(require_api_token)],
 )
 def status(task_id: str):
+    """查询任务状态。"""
     result = status_store.get(task_id)
     log_status(task_id, result)
     return result
@@ -348,12 +366,14 @@ def status(task_id: str):
 
 @app.get("/adapter/audit/{task_id}", summary="查询任务审计", tags=["适配器执行"], dependencies=[Depends(require_api_token)])
 def audit(task_id: str, limit: int = 50):
+    """审计。"""
     safe_limit = max(1, min(limit, 200))
     return {"taskId": task_id, "items": find_by_task_id(task_id, safe_limit)}
 
 
 @app.post("/callbacks/yunxiao/task", summary="接收云效任务回调", tags=["云效回调"], dependencies=[Depends(require_api_token)])
 def yunxiao_task_callback(callback: YunxiaoTaskCallback):
+    """云效任务回调入口。"""
     params = {
         **callback.params,
         "hostId": callback.host_id,
@@ -399,6 +419,7 @@ def yunxiao_task_callback(callback: YunxiaoTaskCallback):
     dependencies=[Depends(require_api_token)],
 )
 def yunxiao_pipeline_failure_callback(callback: YunxiaoPipelineFailureCallback):
+    """云效流水线失败回调入口。"""
     analysis = analyze_pipeline_failure(callback.log_tail, callback.stage_name)
     log_pipeline_failure(callback, analysis)
     workflow = handle_pipeline_failure(callback, analysis)
@@ -416,15 +437,18 @@ def yunxiao_pipeline_failure_callback(callback: YunxiaoPipelineFailureCallback):
 
 @app.post(YUNXIAO_FLOW_EVENT_PATH, summary="接收云效流水线事件", tags=["云效回调"], dependencies=[Depends(require_api_token)])
 def yunxiao_flow_event(payload: dict[str, Any]):
+    """云效流水线事件回调入口。"""
     return _handle_flow_event_safely(payload, source="yunxiao_flow_event")
 
 
 @app.post(YUNXIAO_FLOW_EVENT_PUBLIC_PATH, summary="接收云效公开流水线事件", tags=["云效回调"])
 def yunxiao_flow_event_public(payload: dict[str, Any]):
+    """云效公开流水线事件回调入口。"""
     return _handle_flow_event_safely(payload, source="yunxiao_flow_event_public")
 
 
 def _handle_flow_event_safely(payload: dict[str, Any], source: str) -> dict[str, Any]:
+    """内部辅助函数：handle流程事件safely。"""
     try:
         return _handle_flow_event(payload)
     except Exception as exc:
@@ -439,6 +463,7 @@ def _handle_flow_event_safely(payload: dict[str, Any], source: str) -> dict[str,
 
 
 def _handle_flow_event(payload: dict[str, Any]) -> dict[str, Any]:
+    """内部辅助函数：handle流程事件。"""
     status_code = str(_pick(_task_payload(payload), "statusCode", "status_code", "status", default="")).upper()
     if status_code in YUNXIAO_RUNNING_STATUSES:
         callback = _normalize_flow_event(payload)
@@ -494,6 +519,7 @@ def _handle_flow_event(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _normalize_flow_event(payload: dict[str, Any]) -> YunxiaoPipelineFailureCallback:
+    """内部辅助函数：归一化流程事件。"""
     task = _task_payload(payload)
     params = _params_payload(payload)
     source = _source_payload(payload)
@@ -549,6 +575,7 @@ def _normalize_flow_event(payload: dict[str, Any]) -> YunxiaoPipelineFailureCall
 
 
 def _pick(payload: dict[str, Any], *keys: str, default: Any = None) -> Any:
+    """pick。"""
     for key in keys:
         value = payload.get(key)
         if value not in (None, ""):
@@ -557,6 +584,7 @@ def _pick(payload: dict[str, Any], *keys: str, default: Any = None) -> Any:
 
 
 def _dingtalk_config_changes(request: DingTalkDocConfigRequest) -> dict[str, Any]:
+    """内部辅助函数：钉钉配置changes。"""
     field_map = {
         "appName": "app_name",
         "operatorId": "operator_id",
@@ -583,11 +611,13 @@ def _dingtalk_config_changes(request: DingTalkDocConfigRequest) -> dict[str, Any
 
 
 def _task_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """内部辅助函数：任务载荷。"""
     task = payload.get("task")
     return task if isinstance(task, dict) else payload
 
 
 def _source_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """内部辅助函数：来源载荷。"""
     sources = payload.get("sources")
     if isinstance(sources, list) and sources and isinstance(sources[0], dict):
         source = sources[0]
@@ -599,6 +629,7 @@ def _source_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _decode_commit_message(value: Any) -> str | None:
+    """内部辅助函数：decodecommit消息。"""
     if value in (None, ""):
         return None
     parsed: Any | None = value if isinstance(value, (dict, list)) else None
@@ -636,12 +667,14 @@ def _decode_commit_message(value: Any) -> str | None:
 
 
 def _decode_commit_text(value: Any) -> str | None:
+    """内部辅助函数：decodecommit文本。"""
     text = urllib.parse.unquote(str(value).strip())
     text = text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\r", "\n")
     return text or None
 
 
 def _params_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """内部辅助函数：params载荷。"""
     result: dict[str, Any] = {}
     global_params = payload.get("globalParams")
     if isinstance(global_params, list):

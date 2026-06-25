@@ -20,6 +20,7 @@ _lock = Lock()
 
 
 def log_preview(request: AdapterRequest, preview: AdapterPreview) -> None:
+    """记录预览事件。"""
     _write(
         {
             "event": "preview",
@@ -34,6 +35,7 @@ def log_preview(request: AdapterRequest, preview: AdapterPreview) -> None:
 
 
 def log_execute(request: AdapterRequest, result: AdapterResult) -> None:
+    """记录执行事件。"""
     _write(
         {
             "event": "execute",
@@ -46,6 +48,7 @@ def log_execute(request: AdapterRequest, result: AdapterResult) -> None:
 
 
 def log_status(task_id: str, status: AdapterStatus) -> None:
+    """记录状态查询事件。"""
     _write(
         {
             "event": "status",
@@ -57,6 +60,7 @@ def log_status(task_id: str, status: AdapterStatus) -> None:
 
 
 def log_pipeline_failure(callback: YunxiaoPipelineFailureCallback, analysis: dict[str, Any]) -> None:
+    """记录流水线失败事件。"""
     _write(
         {
             "event": "pipeline_failure",
@@ -80,6 +84,7 @@ def log_pipeline_failure(callback: YunxiaoPipelineFailureCallback, analysis: dic
 
 
 def log_apifox_import(task_id: str, operator: str, result: dict[str, Any]) -> None:
+    """记录 Apifox 导入事件。"""
     _write(
         {
             "event": "apifox_import",
@@ -96,6 +101,7 @@ def log_apifox_import(task_id: str, operator: str, result: dict[str, Any]) -> No
 
 
 def log_webhook_error(source: str, payload: dict[str, Any], exc: Exception) -> None:
+    """记录 webhook 错误事件。"""
     task = payload.get("task") if isinstance(payload.get("task"), dict) else payload
     task_id = task.get("taskId") or task.get("task_id")
     pipeline_id = task.get("pipelineId") or task.get("pipeline_id") or task.get("flowId") or task.get("flow_id")
@@ -116,6 +122,7 @@ def log_webhook_error(source: str, payload: dict[str, Any], exc: Exception) -> N
 
 
 def find_by_task_id(task_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    """查找by任务ID。"""
     rows = _find_db(task_id, limit)
     if rows:
         return rows
@@ -123,6 +130,7 @@ def find_by_task_id(task_id: str, limit: int = 50) -> list[dict[str, Any]]:
 
 
 def _request_fields(request: AdapterRequest) -> dict[str, Any]:
+    """内部辅助函数：请求fields。"""
     params = request.params or {}
     return {
         "taskId": request.task_id,
@@ -137,6 +145,7 @@ def _request_fields(request: AdapterRequest) -> dict[str, Any]:
 
 
 def _truncate(value: str | None, max_length: int) -> str | None:
+    """truncate。"""
     if value is None:
         return None
     if len(value) <= max_length:
@@ -145,6 +154,7 @@ def _truncate(value: str | None, max_length: int) -> str | None:
 
 
 def _write(item: dict[str, Any]) -> None:
+    """写入。"""
     safe_item = {
         "ts": datetime.now(timezone.utc).isoformat(),
         **{key: value for key, value in item.items() if value is not None},
@@ -158,6 +168,7 @@ def _write(item: dict[str, Any]) -> None:
 
 
 def _write_db(item: dict[str, Any]) -> None:
+    """内部辅助函数：写入数据库。"""
     if not db.configured():
         return
     try:
@@ -194,6 +205,7 @@ def _write_db(item: dict[str, Any]) -> None:
 
 
 def _find_db(task_id: str, limit: int) -> list[dict[str, Any]]:
+    """内部辅助函数：查找数据库。"""
     if not db.configured():
         return []
     try:
@@ -238,6 +250,7 @@ def _find_db(task_id: str, limit: int) -> list[dict[str, Any]]:
 
 
 def _find_file(task_id: str, limit: int) -> list[dict[str, Any]]:
+    """内部辅助函数：查找file。"""
     if not AUDIT_PATH.exists():
         return []
     result = []

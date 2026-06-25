@@ -17,10 +17,13 @@ SECRETS_PATH = ROOT / "secrets" / "hosts.secrets.json"
 
 
 class SshAdapter(Adapter):
+    """SshAdapter 适配器。"""
     def supports(self, system: str, action: str) -> bool:
+        """判断当前适配器是否支持该动作。"""
         return system == "ssh" and action in {"check_connectivity"}
 
     def preview(self, request: AdapterRequest) -> AdapterPreview:
+        """预览动作，不执行真实远端操作。"""
         host = self._find_host(request.params.get("hostId"))
         policy = action_policy(request.system, request.action, request.env)
         blocked = host is None
@@ -45,6 +48,7 @@ class SshAdapter(Adapter):
         )
 
     def execute(self, request: AdapterRequest) -> AdapterResult:
+        """执行动作。"""
         preview = self.preview(request)
         if preview.blocked:
             return AdapterResult(task_id=request.task_id, status="FAILED", message=preview.reason or "Blocked")
@@ -78,6 +82,7 @@ class SshAdapter(Adapter):
         password: str,
         params: dict,
     ) -> AdapterResult:
+        """内部辅助函数：检查连通性。"""
         timeout = int(params.get("timeoutSeconds", 10))
         started = time.perf_counter()
         client = paramiko.SSHClient()
@@ -112,6 +117,7 @@ class SshAdapter(Adapter):
             client.close()
 
     def _find_host(self, host_id: str | None) -> dict | None:
+        """内部辅助函数：查找host。"""
         if not host_id or not HOSTS_PATH.exists():
             return None
         with HOSTS_PATH.open("r", encoding="utf-8") as f:
@@ -119,6 +125,7 @@ class SshAdapter(Adapter):
         return next((host for host in hosts if host.get("hostId") == host_id), None)
 
     def _resolve_password(self, password_ref: str | None) -> str | None:
+        """内部辅助函数：解析密码。"""
         if not password_ref:
             return None
         env_value = os.getenv(password_ref)
@@ -132,6 +139,7 @@ class SshAdapter(Adapter):
         return str(value) if value else None
 
     def _safe_host_data(self, host: dict, elapsed_ms: int) -> dict:
+        """内部辅助函数：安全host数据。"""
         return {
             "hostId": host.get("hostId"),
             "platform": host.get("platform"),

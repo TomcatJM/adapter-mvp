@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 
 
 class AdapterRequest(BaseModel):
+    """AdapterRequest 请求模型。"""
     task_id: str = Field(alias="taskId")
     operator: str
     system: str
@@ -15,6 +16,7 @@ class AdapterRequest(BaseModel):
 
 
 class AdapterPreview(BaseModel):
+    """AdapterPreview 类。"""
     task_id: str
     system: str
     action: str
@@ -27,6 +29,7 @@ class AdapterPreview(BaseModel):
 
 
 class AdapterResult(BaseModel):
+    """AdapterResult 结果模型。"""
     task_id: str
     status: str
     message: str
@@ -34,6 +37,7 @@ class AdapterResult(BaseModel):
 
 
 class AdapterStatus(BaseModel):
+    """AdapterStatus 状态模型。"""
     task_id: str
     status: str
     message: str
@@ -41,6 +45,7 @@ class AdapterStatus(BaseModel):
 
 
 class YunxiaoTaskCallback(BaseModel):
+    """YunxiaoTaskCallback 类。"""
     task_id: str = Field(alias="taskId")
     operator: str = "yunxiao"
     host_id: str = Field(alias="hostId")
@@ -54,6 +59,7 @@ class YunxiaoTaskCallback(BaseModel):
 
 
 class YunxiaoPipelineFailureCallback(BaseModel):
+    """YunxiaoPipelineFailureCallback 类。"""
     task_id: str = Field(alias="taskId")
     workflow_id: str | None = Field(default=None, alias="workflowId")
     pipeline_id: str = Field(alias="pipelineId")
@@ -72,6 +78,7 @@ class YunxiaoPipelineFailureCallback(BaseModel):
 
 
 class WorkflowStartRequest(BaseModel):
+    """WorkflowStartRequest 请求模型。"""
     dingtalk_url: str = Field(alias="dingtalkUrl")
     requirement_key: str | None = Field(default=None, alias="requirementKey")
     repo_url: str | None = Field(default=None, alias="repoUrl")
@@ -83,6 +90,7 @@ class WorkflowStartRequest(BaseModel):
 
 
 class WorkflowAdvanceRequest(BaseModel):
+    """WorkflowAdvanceRequest 请求模型。"""
     operator: str = "codex"
     config_name: str | None = Field(default=None, alias="configName")
     kind: str | None = None
@@ -95,6 +103,7 @@ class WorkflowAdvanceRequest(BaseModel):
 
 
 class WorkflowResolveRequest(BaseModel):
+    """WorkflowResolveRequest 请求模型。"""
     operator: str = "codex"
     target_status: str = Field(alias="targetStatus")
     reason: str | None = None
@@ -103,6 +112,7 @@ class WorkflowResolveRequest(BaseModel):
 
 
 class WorkflowRetryRequest(BaseModel):
+    """WorkflowRetryRequest 请求模型。"""
     operator: str = "codex"
     target_status: str = Field(default="CODING_REQUESTED", alias="targetStatus")
     reason: str | None = None
@@ -111,9 +121,36 @@ class WorkflowRetryRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class WorkflowRequirementItem(BaseModel):
+    """WorkflowRequirementItem 数据模型。"""
+    item_index: int | None = Field(default=None, alias="itemIndex")
+    title: str
+    parent_demand_index: int | None = Field(default=None, alias="parentDemandIndex")
+    parent_demand_title: str | None = Field(default=None, alias="parentDemandTitle")
+    owner_name: str | None = Field(default=None, alias="ownerName")
+    content_lines: list[str] = Field(default_factory=list, alias="contentLines")
+
+    model_config = {"populate_by_name": True}
+
+
+class WorkflowRequirementDemand(BaseModel):
+    """WorkflowRequirementDemand 数据模型。"""
+    demand_index: int | None = Field(default=None, alias="demandIndex")
+    title: str
+    description: str | None = None
+    items: list[WorkflowRequirementItem] = Field(default_factory=list)
+
+    model_config = {"populate_by_name": True}
+
+
 class WorkflowRequirementRequest(BaseModel):
+    """WorkflowRequirementRequest 请求模型。"""
     operator: str = "codex"
-    summary: str
+    summary: str | None = None
+    document_title: str | None = Field(default=None, alias="documentTitle")
+    version: str | None = None
+    source_url: str | None = Field(default=None, alias="sourceUrl")
+    demands: list[WorkflowRequirementDemand] = Field(default_factory=list)
     assignee_id: str | None = Field(default=None, alias="assigneeId")
     assignee_name: str | None = Field(default=None, alias="assigneeName")
     acceptance_criteria: list[str] = Field(default_factory=list, alias="acceptanceCriteria")
@@ -128,6 +165,7 @@ class WorkflowRequirementRequest(BaseModel):
 
 
 class WorkflowCodingResultRequest(BaseModel):
+    """WorkflowCodingResultRequest 请求模型。"""
     operator: str = "codex"
     branch_name: str | None = Field(default=None, alias="branchName")
     commit_id: str | None = Field(default=None, alias="commitId")

@@ -14,10 +14,12 @@ PERSONAL_TOKEN_ENDPOINT = "openapi-rdc.aliyuncs.com"
 
 
 class YunxiaoFlowError(RuntimeError):
+    """YunxiaoFlowError 异常类型。"""
     pass
 
 
 def discover_project_from_pipeline(pipeline_id: str) -> dict[str, Any]:
+    """从流水线发现项目。"""
     pipeline_id = _clean_text(pipeline_id)
     if not pipeline_id:
         return {"matched": False, "reason": "missing pipelineId"}
@@ -68,6 +70,7 @@ def discover_project_from_pipeline(pipeline_id: str) -> dict[str, Any]:
 
 
 def get_pipeline(organization_id: str, pipeline_id: str, account: dict[str, Any]) -> dict[str, Any]:
+    """获取流水线信息。"""
     organization_id = _clean_text(organization_id)
     pipeline_id = _clean_text(pipeline_id)
     token = _clean_text(account.get("personalToken"))
@@ -105,6 +108,7 @@ def get_pipeline(organization_id: str, pipeline_id: str, account: dict[str, Any]
 
 
 def _load_personal_token_account(yunxiao_project: dict[str, Any]) -> dict[str, Any]:
+    """内部辅助函数：加载personal令牌account。"""
     account_name = _clean_text(yunxiao_project.get("accountName"))
     if not account_name:
         raise YunxiaoFlowError(f"Yunxiao project account missing: {yunxiao_project.get('projectName')}")
@@ -124,6 +128,7 @@ def _match_project_from_pipeline(
     pipeline: dict[str, Any],
     project_configs: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
+    """内部辅助函数：match项目来自流水线。"""
     evidence_text = "\n".join(_collect_pipeline_text(pipeline)).lower()
     candidates: list[dict[str, Any]] = []
     for config in project_configs:
@@ -140,6 +145,7 @@ def _match_project_from_pipeline(
 
 
 def _collect_pipeline_text(value: Any) -> list[str]:
+    """内部辅助函数：collect流水线文本。"""
     result: list[str] = []
     if isinstance(value, dict):
         for key, item in value.items():
@@ -161,6 +167,7 @@ def _pipeline_cache_remark(
     yunxiao_project: dict[str, Any],
     match: dict[str, Any],
 ) -> str:
+    """内部辅助函数：流水线缓存remark。"""
     parts = [
         "auto-discovered",
         f"yunxiaoProject={yunxiao_project.get('projectName') or ''}",
@@ -171,6 +178,7 @@ def _pipeline_cache_remark(
 
 
 def _pipeline_name(pipeline: dict[str, Any]) -> str | None:
+    """内部辅助函数：流水线name。"""
     for source in _dict_candidates(pipeline):
         value = _clean_text(source.get("name") or source.get("pipelineName"))
         if value:
@@ -179,6 +187,7 @@ def _pipeline_name(pipeline: dict[str, Any]) -> str | None:
 
 
 def _compact_evidence(text: str, project_name: str) -> str:
+    """内部辅助函数：compactevidence。"""
     needle = project_name.lower()
     index = text.find(needle)
     if index < 0:
@@ -191,6 +200,7 @@ def _compact_evidence(text: str, project_name: str) -> str:
 
 
 def _dict_candidates(payload: Any):
+    """内部辅助函数：dictcandidates。"""
     if not isinstance(payload, dict):
         return
     yield payload
@@ -201,6 +211,7 @@ def _dict_candidates(payload: Any):
 
 
 def _parse_json(text: str) -> Any:
+    """内部辅助函数：解析JSON。"""
     try:
         return json.loads(text)
     except json.JSONDecodeError:
@@ -208,6 +219,7 @@ def _parse_json(text: str) -> Any:
 
 
 def _safe_error(text: str) -> str:
+    """内部辅助函数：安全错误。"""
     parsed = _parse_json(text)
     if isinstance(parsed, dict):
         return str(
@@ -220,6 +232,7 @@ def _safe_error(text: str) -> str:
 
 
 def _normalize_endpoint(value: str) -> tuple[str, str]:
+    """内部辅助函数：归一化endpoint。"""
     raw = str(value or PERSONAL_TOKEN_ENDPOINT).strip().rstrip("/")
     if "://" in raw:
         parsed = urllib.parse.urlparse(raw)
@@ -228,10 +241,12 @@ def _normalize_endpoint(value: str) -> tuple[str, str]:
 
 
 def _normalize_name(value: Any) -> str:
+    """内部辅助函数：归一化name。"""
     return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
 
 
 def _clean_text(value: Any) -> str | None:
+    """内部辅助函数：清洗文本。"""
     if value in (None, ""):
         return None
     text = str(value).strip()

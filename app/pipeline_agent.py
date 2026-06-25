@@ -38,6 +38,7 @@ RULES: list[tuple[str, str, str, list[str]]] = [
 
 
 def analyze_pipeline_failure(log_tail: str, stage_name: str) -> dict[str, Any]:
+    """分析流水线失败。"""
     normalized = (log_tail or "").lower()
     for category, confidence, summary, keywords in RULES:
         matched = [keyword for keyword in keywords if keyword in normalized]
@@ -65,6 +66,7 @@ def analyze_pipeline_failure(log_tail: str, stage_name: str) -> dict[str, Any]:
 
 
 def _suggestions(category: str) -> list[str]:
+    """suggestions。"""
     mapping = {
         "compile_error": [
             "本地执行相同编译命令复现",
@@ -96,5 +98,6 @@ def _suggestions(category: str) -> list[str]:
 
 
 def _last_non_empty_lines(text: str, limit: int) -> list[str]:
+    """内部辅助函数：最后非空lines。"""
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     return lines[-limit:]

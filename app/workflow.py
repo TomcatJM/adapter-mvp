@@ -17,6 +17,7 @@ from app.yunxiao import YunxiaoError, close_yunxiao_workitem, create_yunxiao_wor
 
 
 class WorkflowError(RuntimeError):
+    """工作流异常。"""
     pass
 
 
@@ -25,6 +26,7 @@ RETRYABLE_TARGET_STATUSES = {"CODING_REQUESTED"}
 
 
 def start_workflow(request: WorkflowStartRequest) -> dict[str, Any]:
+    """start工作流。"""
     dingtalk_url = request.dingtalk_url.strip()
     if not dingtalk_url:
         raise WorkflowError("dingtalkUrl is required")
@@ -57,12 +59,14 @@ def start_workflow(request: WorkflowStartRequest) -> dict[str, Any]:
 
 
 def get_workflow(workflow_id: str, event_limit: int = 50) -> dict[str, Any]:
+    """获取工作流。"""
     workflow = _load_workflow(workflow_id)
     workflow["events"] = db.list_workflow_events(workflow_id, event_limit)
     return workflow
 
 
 def advance_workflow(workflow_id: str, request: WorkflowAdvanceRequest) -> dict[str, Any]:
+    """推进工作流。"""
     workflow = _load_workflow(workflow_id)
     status = workflow["status"]
     if status == "CREATED":
@@ -89,6 +93,7 @@ def advance_workflow(workflow_id: str, request: WorkflowAdvanceRequest) -> dict[
 
 
 def resolve_workflow(workflow_id: str, request: WorkflowResolveRequest) -> dict[str, Any]:
+    """解析工作流。"""
     workflow = _load_workflow(workflow_id)
     if workflow["status"] != "NEEDS_HUMAN":
         raise WorkflowError(f"Workflow status is not NEEDS_HUMAN: {workflow['status']}")
@@ -111,6 +116,7 @@ def resolve_workflow(workflow_id: str, request: WorkflowResolveRequest) -> dict[
 
 
 def retry_workflow(workflow_id: str, request: WorkflowRetryRequest) -> dict[str, Any]:
+    """重试工作流。"""
     workflow = _load_workflow(workflow_id)
     if workflow["status"] != "PIPELINE_FAILED":
         raise WorkflowError(f"Workflow status is not PIPELINE_FAILED: {workflow['status']}")
@@ -148,11 +154,18 @@ def retry_workflow(workflow_id: str, request: WorkflowRetryRequest) -> dict[str,
 
 
 def submit_requirement(workflow_id: str, request: WorkflowRequirementRequest) -> dict[str, Any]:
+    """提交requirement。"""
     workflow = _load_workflow(workflow_id)
     if workflow["status"] != "DOC_READ":
         raise WorkflowError(f"Workflow status is not DOC_READ: {workflow['status']}")
+    requirement_summary = _derive_requirement_summary(request)
+    demands = [_normalize_requirement_demand(demand) for demand in request.demands]
     requirement = {
-        "summary": request.summary,
+        "summary": requirement_summary,
+        "documentTitle": _clean_text(request.document_title),
+        "version": _clean_text(request.version),
+        "sourceUrl": _clean_text(request.source_url),
+        "demands": demands,
         "assigneeId": _clean_text(request.assignee_id),
         "assigneeName": _clean_text(request.assignee_name),
         "acceptanceCriteria": request.acceptance_criteria,
@@ -168,15 +181,77 @@ def submit_requirement(workflow_id: str, request: WorkflowRequirementRequest) ->
         workflow_id=workflow_id,
         context=context,
         operator=_clean_text(request.operator),
-        event_payload={"summary": request.summary, "apiChangeCount": len(request.api_changes)},
+        event_payload={
+            "summary": requirement_summary,
+            "documentTitle": _clean_text(request.document_title),
+            "version": _clean_text(request.version),
+            "demandCount": len(demands),
+            "taskCount": sum(len(demand.get("items") or []) for demand in demands),
+            "apiChangeCount": len(request.api_changes),
+        },
     )
     return {
         "workflow": updated,
-        "nextAction": "manual coding or future Yunxiao task creation",
+        "nextAction": "manual coding or future Yunxiao demand/task creation",
+    }
+
+
+def _derive_requirement_summary(request: WorkflowRequirementRequest) -> str:
+    """内部辅助函数：deriverequirement摘要。"""
+    summary = _clean_text(request.summary)
+    if summary:
+        return summary
+    document_title = _clean_text(request.document_title)
+    if document_title:
+        return document_title
+    if request.demands:
+        first_demand = request.demands[0]
+        demand_title = _clean_text(first_demand.title)
+        if demand_title:
+            return demand_title
+        if first_demand.items:
+            first_item_title = _clean_text(first_demand.items[0].title)
+            if first_item_title:
+                return first_item_title
+    return ""
+
+
+def _normalize_requirement_demand(demand: Any) -> dict[str, Any]:
+    """内部辅助函数：归一化requirement需求。"""
+    if hasattr(demand, "model_dump"):
+        raw = demand.model_dump(by_alias=True, exclude_none=True)
+    elif isinstance(demand, dict):
+        raw = dict(demand)
+    else:
+        raw = {}
+    items: list[dict[str, Any]] = []
+    for item in raw.get("items") or []:
+        if hasattr(item, "model_dump"):
+            item_raw = item.model_dump(by_alias=True, exclude_none=True)
+        elif isinstance(item, dict):
+            item_raw = dict(item)
+        else:
+            item_raw = {}
+        items.append(
+            {
+                "itemIndex": item_raw.get("itemIndex"),
+                "title": _clean_text(item_raw.get("title")),
+                "parentDemandIndex": item_raw.get("parentDemandIndex"),
+                "parentDemandTitle": _clean_text(item_raw.get("parentDemandTitle")) or _clean_text(raw.get("title")),
+                "ownerName": _clean_text(item_raw.get("ownerName")),
+                "contentLines": [str(line) for line in item_raw.get("contentLines") or [] if str(line).strip()],
+            }
+        )
+    return {
+        "demandIndex": raw.get("demandIndex"),
+        "title": _clean_text(raw.get("title")),
+        "description": _clean_text(raw.get("description")),
+        "items": items,
     }
 
 
 def submit_coding_result(workflow_id: str, request: WorkflowCodingResultRequest) -> dict[str, Any]:
+    """提交编码结果。"""
     workflow = _load_workflow(workflow_id)
     if workflow["status"] not in {"REQUIREMENT_PARSED", "CODING_REQUESTED"}:
         raise WorkflowError(f"Workflow status cannot accept coding result: {workflow['status']}")
@@ -209,6 +284,7 @@ def submit_coding_result(workflow_id: str, request: WorkflowCodingResultRequest)
 
 
 def _advance_created_to_doc_read(workflow: dict[str, Any], request: WorkflowAdvanceRequest) -> dict[str, Any]:
+    """内部辅助函数：推进已创建to文档读取。"""
     workflow_id = workflow["workflowId"]
     try:
         doc = read_dingtalk_doc(
@@ -257,6 +333,7 @@ def _advance_created_to_doc_read(workflow: dict[str, Any], request: WorkflowAdva
 
 
 def _advance_requirement_to_yunxiao_task(workflow: dict[str, Any], request: WorkflowAdvanceRequest) -> dict[str, Any]:
+    """内部辅助函数：推进requirementto云效任务。"""
     workflow_id = workflow["workflowId"]
     if workflow.get("yunxiaoTaskId"):
         return {
@@ -270,13 +347,17 @@ def _advance_requirement_to_yunxiao_task(workflow: dict[str, Any], request: Work
     try:
         result = create_yunxiao_workitem(workflow, _clean_text(request.operator))
     except YunxiaoError as exc:
+        partial_result = getattr(exc, "partial_result", None)
         failed = db.record_workflow_error(
             workflow_id=workflow_id,
             status="REQUIREMENT_PARSED",
             error=str(exc),
             operator=_clean_text(request.operator),
             event_type="yunxiao_workitem_create_failed",
-            event_payload={"step": "yunxiao_workitem_create"},
+            event_payload={
+                "step": "yunxiao_workitem_create",
+                **({"partialResult": partial_result} if partial_result else {}),
+            },
         )
         raise WorkflowError(f"Yunxiao workitem creation failed: {failed['lastError']}") from exc
 
@@ -294,6 +375,12 @@ def _advance_requirement_to_yunxiao_task(workflow: dict[str, Any], request: Work
                     "workitemTypeIdentifier": result.get("workitemTypeIdentifier"),
                     "assignee": result.get("assignee"),
                     "title": result.get("title"),
+                    "description": result.get("description"),
+                    "parentIdentifier": result.get("parentIdentifier"),
+                    "demandCount": result.get("demandCount"),
+                    "taskCount": result.get("taskCount"),
+                    "demands": result.get("demands"),
+                    "taskIdentifiers": result.get("taskIdentifiers"),
                     "configSource": result.get("configSource"),
                 }
             }
@@ -308,6 +395,8 @@ def _advance_requirement_to_yunxiao_task(workflow: dict[str, Any], request: Work
         event_payload={
             "yunxiaoTaskId": result["workitemIdentifier"],
             "yunxiaoTaskDisplayId": result.get("workitemDisplayId"),
+            "demandCount": result.get("demandCount"),
+            "taskCount": result.get("taskCount"),
             "projectName": result.get("projectName"),
             "projectId": result.get("projectId"),
             "assignee": result.get("assignee"),
@@ -321,6 +410,9 @@ def _advance_requirement_to_yunxiao_task(workflow: dict[str, Any], request: Work
                 "source": "yunxiao_workitem_created",
                 "yunxiaoTaskId": result["workitemIdentifier"],
                 "yunxiaoTaskDisplayId": result.get("workitemDisplayId"),
+                "demandCount": result.get("demandCount"),
+                "taskCount": result.get("taskCount"),
+                "taskIdentifiers": result.get("taskIdentifiers"),
                 "assignee": result.get("assignee"),
             }
         },
@@ -351,6 +443,7 @@ def _advance_apifox_synced_to_yunxiao_closed(
     workflow: dict[str, Any],
     request: WorkflowAdvanceRequest,
 ) -> dict[str, Any]:
+    """内部辅助函数：推进Apifoxsyncedto云效已关闭。"""
     workflow_id = workflow["workflowId"]
     try:
         result = close_yunxiao_workitem(workflow, _clean_text(request.operator))
@@ -380,6 +473,9 @@ def _advance_apifox_synced_to_yunxiao_closed(
                     "closedStatus": result.get("closedStatus"),
                     "closedStatusName": result.get("closedStatusName"),
                     "writeback": result.get("writeback"),
+                    "closedTaskIds": result.get("closedTaskIds"),
+                    "skippedTaskIds": result.get("skippedTaskIds"),
+                    "results": result.get("results"),
                     "configSource": result.get("configSource"),
                 },
             }
@@ -400,6 +496,8 @@ def _advance_apifox_synced_to_yunxiao_closed(
             "closedStatusName": result.get("closedStatusName"),
             "alreadyClosed": result.get("alreadyClosed"),
             "writeback": result.get("writeback"),
+            "closedTaskIds": result.get("closedTaskIds"),
+            "skippedTaskIds": result.get("skippedTaskIds"),
         },
     )
     return {
@@ -412,12 +510,15 @@ def _advance_apifox_synced_to_yunxiao_closed(
             "closedStatus": result.get("closedStatus"),
             "closedStatusName": result.get("closedStatusName"),
             "writeback": result.get("writeback"),
+            "closedTaskIds": result.get("closedTaskIds"),
+            "skippedTaskIds": result.get("skippedTaskIds"),
         },
         "nextAction": "delivery workflow is complete",
     }
 
 
 def _document_summary(doc: dict[str, Any]) -> dict[str, Any]:
+    """内部辅助函数：文档摘要。"""
     kind = doc.get("kind")
     summary: dict[str, Any] = {
         "ok": bool(doc.get("ok")),
@@ -449,6 +550,7 @@ def _document_summary(doc: dict[str, Any]) -> dict[str, Any]:
 
 
 def _load_workflow(workflow_id: str) -> dict[str, Any]:
+    """内部辅助函数：加载工作流。"""
     workflow = db.find_workflow_instance(workflow_id)
     if not workflow:
         raise WorkflowError(f"Workflow not found: {workflow_id}")
@@ -456,6 +558,7 @@ def _load_workflow(workflow_id: str) -> dict[str, Any]:
 
 
 def _resolve_next_action(target_status: str) -> str:
+    """内部辅助函数：解析下一步action。"""
     if target_status == "APIFOX_SYNCED":
         return "POST /workflow/{workflow_id}/advance to retry Yunxiao close/writeback"
     if target_status == "PIPELINE_SUCCESS":
@@ -466,12 +569,14 @@ def _resolve_next_action(target_status: str) -> str:
 
 
 def _retry_next_action(target_status: str) -> str:
+    """内部辅助函数：重试下一步action。"""
     if target_status == "CODING_REQUESTED":
         return "Codex should repair the failure and POST /workflow/{workflow_id}/coding-result"
     return "inspect workflow and continue manually"
 
 
 def _merge_context(workflow: dict[str, Any], changes: dict[str, Any]) -> dict[str, Any]:
+    """内部辅助函数：merge上下文。"""
     context = dict(workflow.get("context") or {})
     for key, value in changes.items():
         if isinstance(value, dict) and isinstance(context.get(key), dict):
@@ -482,10 +587,12 @@ def _merge_context(workflow: dict[str, Any], changes: dict[str, Any]) -> dict[st
 
 
 def _new_workflow_id() -> str:
+    """内部辅助函数：new工作流ID。"""
     return "wf-" + uuid.uuid4().hex[:16]
 
 
 def _clean_text(value: Any) -> str | None:
+    """内部辅助函数：清洗文本。"""
     if value in (None, ""):
         return None
     text = str(value).strip()

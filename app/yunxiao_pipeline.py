@@ -83,6 +83,7 @@ COMMIT_YUNXIAO_TASK_PATTERNS = (
 
 
 def handle_pipeline_success(payload: dict[str, Any], callback: YunxiaoPipelineFailureCallback) -> dict[str, Any]:
+    """handle流水线success。"""
     workflow, binding = _find_workflow_for_callback(payload, callback, PIPELINE_SUCCESS_BINDING_STATUSES)
     if not workflow:
         if binding.get("reason") in {"workflow not found", "workflow match ambiguous"}:
@@ -176,6 +177,7 @@ def handle_pipeline_success(payload: dict[str, Any], callback: YunxiaoPipelineFa
 
 
 def handle_pipeline_running(callback: YunxiaoPipelineFailureCallback) -> dict[str, Any]:
+    """handle流水线running。"""
     workflow, binding = _find_workflow_for_callback(callback.params, callback, PIPELINE_RUNNING_BINDING_STATUSES)
     if not workflow:
         return {
@@ -224,6 +226,7 @@ def handle_pipeline_running(callback: YunxiaoPipelineFailureCallback) -> dict[st
 
 
 def handle_pipeline_failure(callback: YunxiaoPipelineFailureCallback, analysis: dict[str, Any]) -> dict[str, Any]:
+    """handle流水线失败。"""
     workflow, binding = _find_workflow_for_callback(callback.params, callback, PIPELINE_FAILURE_BINDING_STATUSES)
     if not workflow:
         return {
@@ -290,6 +293,7 @@ def _mark_pipeline_success(
     workflow: dict[str, Any],
     callback: YunxiaoPipelineFailureCallback,
 ) -> dict[str, Any]:
+    """内部辅助函数：标记流水线success。"""
     context = _merge_context(workflow, {"pipeline": _pipeline_context(callback)})
     return db.update_workflow_pipeline_success(
         workflow_id=workflow["workflowId"],
@@ -305,6 +309,7 @@ def _mark_pipeline_success(
 
 
 def _workflow_id_from_payload(payload: dict[str, Any], callback: YunxiaoPipelineFailureCallback) -> str | None:
+    """内部辅助函数：工作流ID来自载荷。"""
     return _clean_text(
         callback.workflow_id
         or _pick(_params_payload(payload), "WORKFLOW_ID", "workflowId", "workflow_id")
@@ -313,6 +318,7 @@ def _workflow_id_from_payload(payload: dict[str, Any], callback: YunxiaoPipeline
 
 
 def _workflow_id_from_callback(callback: YunxiaoPipelineFailureCallback) -> str | None:
+    """内部辅助函数：工作流ID来自回调。"""
     return _clean_text(
         callback.workflow_id
         or _pick(callback.params, "WORKFLOW_ID", "workflowId", "workflow_id")
@@ -325,6 +331,7 @@ def _find_workflow_for_callback(
     callback: YunxiaoPipelineFailureCallback,
     project_binding_statuses: set[str],
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """内部辅助函数：查找工作流for回调。"""
     workflow_id = _workflow_id_from_payload(payload, callback)
     if workflow_id:
         workflow = db.find_workflow_instance(workflow_id)
@@ -424,6 +431,7 @@ def _find_workflow_for_callback(
 
 
 def _find_with_ambiguity_guard(find: Any, source: str, attempts: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """内部辅助函数：查找withambiguityguard。"""
     try:
         return find()
     except db.WorkflowLookupAmbiguousError as exc:
@@ -436,6 +444,7 @@ def _find_with_ambiguity_guard(find: Any, source: str, attempts: list[dict[str, 
 
 
 def _project_name_from_pipeline_config(pipeline_id: str) -> str | None:
+    """内部辅助函数：项目name来自流水线配置。"""
     config = db.find_apifox_pipeline_config(pipeline_id)
     project_name = _clean_text((config or {}).get("projectName"))
     if project_name:
@@ -445,6 +454,7 @@ def _project_name_from_pipeline_config(pipeline_id: str) -> str | None:
 
 
 def _find_workflow_by_yunxiao_reference(value: str, statuses: set[str]) -> dict[str, Any] | None:
+    """内部辅助函数：查找工作流by云效reference。"""
     workflow = db.find_workflow_by_yunxiao_task_id(value)
     if workflow:
         return workflow
@@ -452,6 +462,7 @@ def _find_workflow_by_yunxiao_reference(value: str, statuses: set[str]) -> dict[
 
 
 def _find_workflow_by_yunxiao_display_id(value: str, statuses: set[str]) -> dict[str, Any] | None:
+    """内部辅助函数：查找工作流by云效展示ID。"""
     target = _normalize_identifier(value)
     if not target:
         return None
@@ -469,6 +480,7 @@ def _find_workflow_by_yunxiao_display_id(value: str, statuses: set[str]) -> dict
 
 
 def _workflow_yunxiao_reference_candidates(workflow: dict[str, Any]) -> list[str]:
+    """内部辅助函数：工作流云效referencecandidates。"""
     context = workflow.get("context") if isinstance(workflow.get("context"), dict) else {}
     yunxiao = context.get("yunxiao") if isinstance(context.get("yunxiao"), dict) else {}
     values: list[Any] = [
@@ -495,6 +507,7 @@ def _workflow_yunxiao_reference_candidates(workflow: dict[str, Any]) -> list[str
 
 
 def _find_active_workflow_by_project(project_name: str, statuses: set[str]) -> dict[str, Any] | None:
+    """内部辅助函数：查找active工作流by项目。"""
     project_aliases = _project_aliases(project_name)
     candidates = [
         workflow
@@ -510,6 +523,7 @@ def _find_active_workflow_by_project(project_name: str, statuses: set[str]) -> d
 
 
 def _project_aliases(project_name: str) -> set[str]:
+    """内部辅助函数：项目aliases。"""
     aliases = {_clean_text(project_name)}
     project_config = db.find_yunxiao_project_config(project_name)
     organization_id = _clean_text((project_config or {}).get("organizationId"))
@@ -522,6 +536,7 @@ def _project_aliases(project_name: str) -> set[str]:
 
 
 def _project_matches_workflow(project_aliases: set[str], workflow: dict[str, Any]) -> bool:
+    """内部辅助函数：项目matches工作流。"""
     expected = {_normalize_project_name(alias) for alias in project_aliases}
     expected.discard(None)
     if not expected:
@@ -530,6 +545,7 @@ def _project_matches_workflow(project_aliases: set[str], workflow: dict[str, Any
 
 
 def _workflow_project_candidates(workflow: dict[str, Any]) -> list[str]:
+    """内部辅助函数：工作流项目candidates。"""
     context = workflow.get("context") or {}
     requirement = context.get("requirement") or {}
     values: list[Any] = []
@@ -549,16 +565,19 @@ def _workflow_project_candidates(workflow: dict[str, Any]) -> list[str]:
 
 
 def _normalize_project_name(value: Any) -> str | None:
+    """内部辅助函数：归一化项目name。"""
     text = _clean_text(value)
     return text.lower() if text else None
 
 
 def _normalize_identifier(value: Any) -> str | None:
+    """内部辅助函数：归一化identifier。"""
     text = _clean_text(value)
     return text.upper() if text else None
 
 
 def _first_item(value: Any) -> str | None:
+    """内部辅助函数：第一个条目。"""
     if isinstance(value, list):
         for item in value:
             text = _clean_text(item)
@@ -569,6 +588,7 @@ def _first_item(value: Any) -> str | None:
 
 
 def _repo_name(value: Any) -> str | None:
+    """内部辅助函数：reponame。"""
     text = _clean_text(value)
     if not text:
         return None
@@ -581,6 +601,7 @@ def _repo_name(value: Any) -> str | None:
 
 
 def _pipeline_context(callback: YunxiaoPipelineFailureCallback) -> dict[str, Any]:
+    """内部辅助函数：流水线上下文。"""
     return {
         "taskId": callback.task_id,
         "pipelineId": callback.pipeline_id,
@@ -594,6 +615,7 @@ def _pipeline_context(callback: YunxiaoPipelineFailureCallback) -> dict[str, Any
 
 
 def _binding_ids_from_commit_message(message: str | None) -> dict[str, str]:
+    """内部辅助函数：bindingids来自commit消息。"""
     text = _clean_text(message)
     if not text:
         return {}
@@ -612,12 +634,14 @@ def _binding_ids_from_commit_message(message: str | None) -> dict[str, str]:
 
 
 def _apifox_event_type(apifox: dict[str, Any]) -> str:
+    """内部辅助函数：Apifox事件类型。"""
     if not apifox.get("enabled"):
         return "apifox_sync_skipped"
     return "apifox_sync_failed"
 
 
 def _apifox_event_payload(apifox: dict[str, Any]) -> dict[str, Any]:
+    """内部辅助函数：Apifox事件载荷。"""
     return {
         "enabled": apifox.get("enabled"),
         "imported": apifox.get("imported"),
@@ -631,6 +655,7 @@ def _apifox_event_payload(apifox: dict[str, Any]) -> dict[str, Any]:
 
 
 def _merge_context(workflow: dict[str, Any], changes: dict[str, Any]) -> dict[str, Any]:
+    """内部辅助函数：merge上下文。"""
     context = dict(workflow.get("context") or {})
     for key, value in changes.items():
         if isinstance(value, dict) and isinstance(context.get(key), dict):
@@ -641,6 +666,7 @@ def _merge_context(workflow: dict[str, Any], changes: dict[str, Any]) -> dict[st
 
 
 def _pick(payload: dict[str, Any], *keys: str, default: Any = None) -> Any:
+    """pick。"""
     for key in keys:
         value = payload.get(key)
         if value not in (None, ""):
@@ -649,6 +675,7 @@ def _pick(payload: dict[str, Any], *keys: str, default: Any = None) -> Any:
 
 
 def _pick_yunxiao_reference(payload: dict[str, Any]) -> str | None:
+    """内部辅助函数：pick云效reference。"""
     value = _pick(payload, *YUNXIAO_TASK_PARAM_ALIASES)
     if _clean_text(value):
         return _clean_text(value)
@@ -662,6 +689,7 @@ def _pick_yunxiao_reference(payload: dict[str, Any]) -> str | None:
 
 
 def _is_yunxiao_reference_key(key: Any) -> bool:
+    """内部辅助函数：is云效referencekey。"""
     text = _clean_text(key)
     if not text:
         return False
@@ -679,6 +707,7 @@ def _is_yunxiao_reference_key(key: Any) -> bool:
 
 
 def _params_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """内部辅助函数：params载荷。"""
     result: dict[str, Any] = {}
     global_params = payload.get("globalParams")
     if isinstance(global_params, list):
@@ -693,6 +722,7 @@ def _params_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _clean_text(value: Any) -> str | None:
+    """内部辅助函数：清洗文本。"""
     if value in (None, ""):
         return None
     text = str(value).strip()

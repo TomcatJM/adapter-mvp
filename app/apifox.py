@@ -17,14 +17,17 @@ from app.yunxiao_flow import discover_project_from_pipeline
 
 
 class OpenapiValidationError(ValueError):
+    """OpenAPI 校验异常。"""
     pass
 
 
 class OpenapiSignatureError(ValueError):
+    """OpenAPI 签名异常。"""
     pass
 
 
 def maybe_import_from_flow_event(payload: dict[str, Any]) -> dict[str, Any]:
+    """在需要时从流程事件导入 OpenAPI。"""
     config = _resolve_config(payload)
     safe_config = _safe_config(config)
     if not config["autoImport"]:
@@ -56,6 +59,7 @@ def maybe_import_from_flow_event(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _resolve_config(payload: dict[str, Any]) -> dict[str, Any]:
+    """内部辅助函数：解析配置。"""
     params = _params_payload(payload)
     task = _task_payload(payload)
     source = _source_payload(payload)
@@ -140,6 +144,7 @@ def _resolve_config(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _import_openapi(config: dict[str, Any]) -> dict[str, Any]:
+    """内部辅助函数：导入OpenAPI。"""
     url = f"{config['baseUrl'].rstrip('/')}/v1/projects/{config['projectId']}/import-openapi?locale={config['locale']}"
     payload = {
         "input": {"url": config["openapiUrl"]},
@@ -173,6 +178,7 @@ def _import_openapi(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _parse_json(text: str) -> Any:
+    """内部辅助函数：解析JSON。"""
     try:
         return json.loads(text)
     except json.JSONDecodeError:
@@ -180,10 +186,12 @@ def _parse_json(text: str) -> Any:
 
 
 def _safe_config(config: dict[str, Any]) -> dict[str, Any]:
+    """内部辅助函数：安全配置。"""
     return {key: value for key, value in config.items() if key != "accessToken"}
 
 
 def _preflight_openapi(project_name: str, upstream_url: str | None = None) -> dict[str, Any]:
+    """内部辅助函数：preflightOpenAPI。"""
     try:
         spec = fetch_sanitized_openapi(project_name, upstream_url=upstream_url)
         return {"ok": True, "pathCount": len(spec.get("paths") or {})}
@@ -192,6 +200,7 @@ def _preflight_openapi(project_name: str, upstream_url: str | None = None) -> di
 
 
 def fetch_sanitized_openapi(project_name: str, upstream_url: str | None = None) -> dict[str, Any]:
+    """fetchsanitizedOpenAPI。"""
     if project_name == "_empty":
         return {"openapi": "3.1.0", "info": {"title": "empty-api-cleanup", "version": "1.0.0"}, "paths": {}}
     project_key = _normalize_key(project_name)
@@ -214,6 +223,7 @@ def fetch_sanitized_openapi(project_name: str, upstream_url: str | None = None) 
 
 
 def _unwrap_openapi_payload(payload: Any) -> dict[str, Any]:
+    """内部辅助函数：unwrapOpenAPI载荷。"""
     current = payload
     for _ in range(4):
         if isinstance(current, dict):
@@ -228,6 +238,7 @@ def _unwrap_openapi_payload(payload: Any) -> dict[str, Any]:
 
 
 def _unwrap_string_payload(value: str) -> Any:
+    """内部辅助函数：unwrapstring载荷。"""
     text = value.strip()
     if not text:
         return text
@@ -243,6 +254,7 @@ def _unwrap_string_payload(value: str) -> Any:
 
 
 def _validate_openapi_spec(spec: dict[str, Any]) -> None:
+    """内部辅助函数：校验OpenAPIspec。"""
     if not isinstance(spec, dict):
         raise OpenapiValidationError("upstream OpenAPI response is not an object")
     if not (spec.get("openapi") or spec.get("swagger")):
@@ -256,6 +268,7 @@ def _validate_openapi_spec(spec: dict[str, Any]) -> None:
 
 
 def strip_project_path_from_openapi(spec: dict[str, Any], project_name: str) -> dict[str, Any]:
+    """strip项目path来自OpenAPI。"""
     prefix = "/" + str(project_name or "").strip("/")
     if not prefix or prefix == "/":
         return spec
@@ -271,6 +284,7 @@ def strip_project_path_from_openapi(spec: dict[str, Any], project_name: str) -> 
 
 
 def _strip_path_prefix(path: str, prefix: str) -> str:
+    """内部辅助函数：strippathprefix。"""
     if path == prefix:
         return "/"
     if path.startswith(prefix + "/"):
@@ -279,6 +293,7 @@ def _strip_path_prefix(path: str, prefix: str) -> str:
 
 
 def _adapter_openapi_url(project_name: str, upstream_url: str | None = None) -> str:
+    """内部辅助函数：适配器OpenAPI链接。"""
     base_url = os.getenv("ADAPTER_PUBLIC_BASE_URL", "http://47.116.102.238:18080").rstrip("/")
     url = f"{base_url}/adapter/openapi/{project_name}"
     if not upstream_url:
@@ -296,6 +311,7 @@ def _adapter_openapi_url(project_name: str, upstream_url: str | None = None) -> 
 
 
 def verify_signed_upstream_url(project_name: str, upstream_url: str | None, signature: str | None) -> str | None:
+    """校验signedupstream链接。"""
     if not upstream_url:
         return None
     secret = _openapi_url_signing_secret()
@@ -308,19 +324,23 @@ def verify_signed_upstream_url(project_name: str, upstream_url: str | None, sign
 
 
 def _openapi_url_signing_secret() -> str | None:
+    """内部辅助函数：OpenAPI链接signingsecret。"""
     return os.getenv("APIFOX_OPENAPI_SIGNING_SECRET") or os.getenv("ADAPTER_API_TOKEN")
 
 
 def _sign_openapi_upstream(project_name: str, upstream_url: str, secret: str) -> str:
+    """内部辅助函数：签名OpenAPIupstream。"""
     message = f"{project_name}\n{upstream_url}".encode("utf-8")
     return hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
 
 
 def _find_project_config(project_name: str) -> dict[str, Any] | None:
+    """内部辅助函数：查找项目配置。"""
     return db.find_apifox_project_config(project_name)
 
 
 def _find_pipeline_config(pipeline_id: str) -> dict[str, Any] | None:
+    """内部辅助函数：查找流水线配置。"""
     return db.find_apifox_pipeline_config(pipeline_id)
 
 
@@ -330,6 +350,7 @@ def _project_config_source(
     project_key: str,
     project_name_source: str,
 ) -> str:
+    """内部辅助函数：项目配置来源。"""
     if _pick(params, "APIFOX_PROJECT_ID"):
         return "payload"
     if project_config and project_config.get("apifoxProjectId"):
@@ -340,6 +361,7 @@ def _project_config_source(
 
 
 def _missing_project_mapping_reason(config: dict[str, Any]) -> str:
+    """内部辅助函数：缺失项目mappingreason。"""
     pipeline_id = config.get("pipelineId") or "unknown"
     return (
         f"missing Apifox project mapping for pipelineId={pipeline_id}; "
@@ -350,6 +372,7 @@ def _missing_project_mapping_reason(config: dict[str, Any]) -> str:
 
 
 def _missing_config_reason(config: dict[str, Any], missing: list[str]) -> str:
+    """内部辅助函数：缺失配置reason。"""
     if missing == ["projectId"] and config.get("projectName"):
         return (
             f"missing Apifox project ID for projectName={config['projectName']} "
@@ -360,6 +383,7 @@ def _missing_config_reason(config: dict[str, Any], missing: list[str]) -> str:
 
 
 def _pick(payload: dict[str, Any], *keys: str, default: Any = None) -> Any:
+    """pick。"""
     for key in keys:
         value = payload.get(key)
         if value not in (None, ""):
@@ -368,6 +392,7 @@ def _pick(payload: dict[str, Any], *keys: str, default: Any = None) -> Any:
 
 
 def _source_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """内部辅助函数：来源载荷。"""
     sources = payload.get("sources")
     if isinstance(sources, list) and sources and isinstance(sources[0], dict):
         return sources[0]
@@ -375,11 +400,13 @@ def _source_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _task_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """内部辅助函数：任务载荷。"""
     task = payload.get("task")
     return task if isinstance(task, dict) else payload
 
 
 def _params_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """内部辅助函数：params载荷。"""
     result: dict[str, Any] = {}
     global_params = payload.get("globalParams")
     if isinstance(global_params, list):
@@ -394,6 +421,7 @@ def _params_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _repo_name(repo: str) -> str | None:
+    """内部辅助函数：reponame。"""
     if not repo:
         return None
     name = repo.rstrip("/").rsplit("/", 1)[-1]
@@ -401,11 +429,13 @@ def _repo_name(repo: str) -> str | None:
 
 
 def _normalize_key(value: Any) -> str:
+    """内部辅助函数：归一化key。"""
     normalized = re.sub(r"[^A-Za-z0-9]+", "_", str(value or "default")).strip("_").upper()
     return normalized or "DEFAULT"
 
 
 def _openapi_url_from_template(project_name: str, project_key: str) -> str:
+    """内部辅助函数：OpenAPI链接来自模板。"""
     template = os.getenv(
         "APIFOX_OPENAPI_URL_TEMPLATE",
         "https://micro-api-test.kidcastle.com.cn/gw/{project}/v3/api-docs",

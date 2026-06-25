@@ -78,6 +78,88 @@ class YunxiaoWorkitemCloseTest(unittest.TestCase):
         self.assertEqual(result["writeback"], "skipped")
         self.assertEqual([item["action"] for item in captured], ["GetWorkItemInfo"])
 
+    def test_close_workitem_tree_only_closes_child_tasks_and_mentions_each_task(self) -> None:
+        from app.yunxiao import close_yunxiao_workitem
+
+        captured: list[dict] = []
+        task_lookup_counts = {"TASK-1": 0, "TASK-2": 0}
+
+        def fake_request(**kwargs):
+            captured.append(kwargs)
+            if kwargs["action"] == "GetWorkItemInfo":
+                path = kwargs["path"]
+                if path.endswith("/TASK-1"):
+                    task_lookup_counts["TASK-1"] += 1
+                    status = "doing" if task_lookup_counts["TASK-1"] == 1 else "done"
+                    return {"success": True, "data": {"identifier": "TASK-1", "serialNumber": "TASKA-1186", "statusIdentifier": status}}
+                if path.endswith("/TASK-2"):
+                    task_lookup_counts["TASK-2"] += 1
+                    status = "doing" if task_lookup_counts["TASK-2"] == 1 else "done"
+                    return {"success": True, "data": {"identifier": "TASK-2", "serialNumber": "TASKB-1187", "statusIdentifier": status}}
+                raise AssertionError(f"unexpected task lookup path: {path}")
+            return {"success": True, "requestId": f"req-{len(captured)}"}
+
+        workflow = {
+            "workflowId": "wf-close-tree-1",
+            "requirementKey": "REQ-1",
+            "status": "APIFOX_SYNCED",
+            "dingtalkUrl": "https://alidocs.dingtalk.com/i/nodes/node-123",
+            "repoUrl": "https://codeup.example/repo.git",
+            "branchName": "feature/REQ-1",
+            "commitId": "abc123",
+            "yunxiaoTaskId": "REQ-ROOT",
+            "yunxiaoPipelineId": "pipe-1",
+            "yunxiaoBuildNumber": "42",
+            "apifoxProjectId": "8460173",
+            "context": {
+                "projectName": "jdb-school-crm",
+                "requirement": {
+                    "summary": "新增客户跟进记录接口",
+                    "affectedRepos": ["jdb-school-crm"],
+                },
+                "yunxiao": {
+                    "createResult": {
+                        "workitemIdentifier": "REQ-ROOT",
+                        "workitemDisplayId": "REQ-ROOT-DISPLAY",
+                        "taskIdentifiers": ["TASK-1", "TASK-2"],
+                    }
+                },
+                "codingResult": {
+                    "branchName": "feature/REQ-1",
+                    "commitId": "abc123",
+                    "mergeRequestUrl": "https://codeup.example/mr/1",
+                },
+                "pipeline": {
+                    "pipelineId": "pipe-1",
+                    "buildNumber": "42",
+                    "branchName": "feature/REQ-1",
+                    "commitId": "abc123",
+                },
+                "apifox": {
+                    "lastResult": {
+                        "imported": True,
+                        "projectId": "8460173",
+                    }
+                },
+            },
+        }
+
+        with patch.dict(os.environ, ENV, clear=True), patch(
+            "app.yunxiao._request_yunxiao_openapi", side_effect=fake_request
+        ):
+            result = close_yunxiao_workitem(workflow, "codex")
+
+        self.assertEqual(result["closedTaskIds"], ["TASK-1", "TASK-2"])
+        self.assertEqual(result["skippedTaskIds"], [])
+        get_paths = [item["path"] for item in captured if item["action"] == "GetWorkItemInfo"]
+        self.assertEqual(get_paths, ["/organization/org-1/workitems/TASK-1", "/organization/org-1/workitems/TASK-1", "/organization/org-1/workitems/TASK-2", "/organization/org-1/workitems/TASK-2"])
+        comment_payloads = [item["payload"]["content"] for item in captured if item["action"] == "CreateWorkitemComment"]
+        self.assertEqual(len(comment_payloads), 2)
+        self.assertIn("云效工作项：TASKA-1186", comment_payloads[0])
+        self.assertIn("云效工作项：TASKB-1187", comment_payloads[1])
+        self.assertNotIn("REQ-ROOT-DISPLAY", comment_payloads[0])
+        self.assertNotIn("REQ-ROOT-DISPLAY", comment_payloads[1])
+
     def test_close_workitem_missing_task_id_fails_explicitly(self) -> None:
         from app.yunxiao import YunxiaoError, close_yunxiao_workitem
 

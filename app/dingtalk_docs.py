@@ -30,6 +30,7 @@ SECRET_RE = re.compile(
 
 
 class DingTalkDocError(RuntimeError):
+    """钉钉文档读取异常。"""
     pass
 
 
@@ -44,6 +45,7 @@ def read_dingtalk_doc(
     config_name: str | None = None,
     kind: str | None = None,
 ) -> dict[str, Any]:
+    """读取钉钉文档。"""
     node = extract_node_id(url=url, node_id=node_id)
     explicit_resource_id = _validate_resource_id(workbook_id) if workbook_id else None
     safe_timeout = max(5, min(int(timeout or 60), 180))
@@ -114,6 +116,7 @@ def resolve_dingtalk_operator(
     config_name: str | None = None,
     timeout: int = 60,
 ) -> dict[str, Any]:
+    """解析钉钉操作者。"""
     safe_user_id = _validate_user_id(user_id)
     safe_timeout = max(5, min(int(timeout or 60), 180))
     config = _load_config(config_name)
@@ -146,6 +149,7 @@ def resolve_dingtalk_operator(
 
 
 def extract_node_id(*, url: str | None = None, node_id: str | None = None) -> str:
+    """提取节点ID。"""
     raw = (node_id or "").strip()
     if raw:
         if not SAFE_NODE_RE.match(raw):
@@ -162,6 +166,7 @@ def extract_node_id(*, url: str | None = None, node_id: str | None = None) -> st
 
 
 def _load_config(config_name: str | None) -> dict[str, Any]:
+    """内部辅助函数：加载配置。"""
     name = (config_name or os.getenv("DINGTALK_DEFAULT_CONFIG_NAME") or "default").strip()
     config = db.find_dingtalk_app_config(name)
     if not config:
@@ -172,6 +177,7 @@ def _load_config(config_name: str | None) -> dict[str, Any]:
 
 
 def _get_access_token(config: dict[str, Any], timeout: int) -> str:
+    """内部辅助函数：获取access令牌。"""
     cached = str(config.get("accessToken") or "")
     expires_at = _parse_datetime(config.get("tokenExpiresAt"))
     if cached and expires_at and expires_at > _now_utc() + timedelta(minutes=2):
@@ -201,6 +207,7 @@ def _call_required_endpoint(
     cell_range: str,
     timeout: int,
 ) -> Any:
+    """内部辅助函数：callrequiredendpoint。"""
     result = _call_endpoint(config, prefix, token, node_id, sheet_id, cell_range, timeout)
     if result is None:
         raise DingTalkDocError(f"DingTalk endpoint is not configured: {prefix}")
@@ -216,6 +223,7 @@ def _call_endpoint(
     cell_range: str,
     timeout: int,
 ) -> Any:
+    """内部辅助函数：callendpoint。"""
     template = config.get(f"{prefix}UrlTemplate")
     if not template and prefix == "doc_info" and config.get("operatorId"):
         template = DEFAULT_DOC_INFO_ENDPOINT_TEMPLATE
@@ -242,6 +250,7 @@ def _read_doc_info(
     timeout: int,
     required: bool,
 ) -> tuple[Any, str | None]:
+    """内部辅助函数：读取文档信息。"""
     try:
         return _call_endpoint(config, "doc_info", token, node_id, sheet_id, cell_range, timeout), None
     except DingTalkDocError as exc:
@@ -251,12 +260,14 @@ def _read_doc_info(
 
 
 def _resolve_document_id(node_id: str, info: Any) -> str:
+    """内部辅助函数：解析文档ID。"""
     value = _pick(info, "workbookId", "documentId", "docId", "nodeId", "dentryUuid", default="")
     resolved = str(value or "").strip()
     return _validate_resource_id(resolved) if resolved else node_id
 
 
 def _validate_resource_id(value: str) -> str:
+    """内部辅助函数：校验resourceID。"""
     resource_id = str(value or "").strip()
     if not SAFE_NODE_RE.match(resource_id):
         raise DingTalkDocError("Invalid DingTalk document resource id")
@@ -264,12 +275,14 @@ def _validate_resource_id(value: str) -> str:
 
 
 def _with_doc_info_context(exc: DingTalkDocError, info_error: str | None) -> DingTalkDocError:
+    """内部辅助函数：with文档信息上下文。"""
     if not info_error:
         return exc
     return DingTalkDocError(f"{exc}; doc_info failed before fallback: {info_error}")
 
 
 def _request_json(method: str, url: str, payload: Any, headers: dict[str, str], timeout: int) -> Any:
+    """内部辅助函数：请求JSON。"""
     data = None
     request_headers = {"Accept": "application/json", **headers}
     if payload is not None:
@@ -289,6 +302,7 @@ def _request_json(method: str, url: str, payload: Any, headers: dict[str, str], 
 
 
 def _request_oapi_user_detail(config: dict[str, Any], user_id: str, timeout: int) -> Any:
+    """内部辅助函数：请求oapiuser详情。"""
     token = _get_oapi_access_token(config, timeout)
     endpoint = os.getenv("DINGTALK_OAPI_USER_DETAIL_ENDPOINT") or DEFAULT_OAPI_USER_DETAIL_ENDPOINT
     payload = {"userid": user_id, "language": "zh_CN"}
@@ -304,6 +318,7 @@ def _request_oapi_user_detail(config: dict[str, Any], user_id: str, timeout: int
 
 
 def _get_oapi_access_token(config: dict[str, Any], timeout: int) -> str:
+    """内部辅助函数：获取oapiaccess令牌。"""
     endpoint = _render_template(
         os.getenv("DINGTALK_OAPI_AUTH_ENDPOINT_TEMPLATE") or DEFAULT_OAPI_AUTH_ENDPOINT_TEMPLATE,
         {
@@ -322,6 +337,7 @@ def _get_oapi_access_token(config: dict[str, Any], timeout: int) -> str:
 
 
 def _raise_oapi_error(response: Any, prefix: str) -> None:
+    """内部辅助函数：raiseoapi错误。"""
     if not isinstance(response, dict):
         return
     errcode = response.get("errcode")
@@ -332,6 +348,7 @@ def _raise_oapi_error(response: Any, prefix: str) -> None:
 
 
 def _append_query(url: str, params: dict[str, str]) -> str:
+    """内部辅助函数：appendquery。"""
     parsed = urllib.parse.urlparse(url)
     query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
     query.extend(params.items())
@@ -339,10 +356,12 @@ def _append_query(url: str, params: dict[str, str]) -> str:
 
 
 def _should_fallback_to_oapi_user_detail(message: str) -> bool:
+    """内部辅助函数：shouldfallbacktooapiuser详情。"""
     return "status=404" in message or "找不到该用户" in message
 
 
 def _auth_headers(config: dict[str, Any], token: str) -> dict[str, str]:
+    """内部辅助函数：鉴权headers。"""
     header_name = str(config.get("tokenHeaderName") or DEFAULT_TOKEN_HEADER).strip()
     if not header_name:
         return {}
@@ -356,6 +375,7 @@ def _template_context(
     cell_range: str,
     operator_id: str | None,
 ) -> dict[str, str]:
+    """内部辅助函数：模板上下文。"""
     operator = operator_id or ""
     return {
         "accessToken": token,
@@ -371,6 +391,7 @@ def _template_context(
 
 
 def _validate_user_id(value: str) -> str:
+    """内部辅助函数：校验userID。"""
     user_id = str(value or "").strip()
     if not user_id:
         raise DingTalkDocError("DingTalk userId is required")
@@ -380,6 +401,7 @@ def _validate_user_id(value: str) -> str:
 
 
 def _render_template(value: str, context: dict[str, str]) -> str:
+    """内部辅助函数：render模板。"""
     rendered = Template(value).safe_substitute(context)
     for key, item in context.items():
         rendered = rendered.replace("{" + key + "}", item)
@@ -387,6 +409,7 @@ def _render_template(value: str, context: dict[str, str]) -> str:
 
 
 def _render_body(value: Any, context: dict[str, str]) -> Any:
+    """内部辅助函数：render正文。"""
     if isinstance(value, str):
         rendered = _render_template(value, context)
         return json.loads(rendered) if rendered.strip() else None
@@ -394,6 +417,7 @@ def _render_body(value: Any, context: dict[str, str]) -> Any:
 
 
 def _render_json_value(value: Any, context: dict[str, str]) -> Any:
+    """内部辅助函数：renderJSON值。"""
     if isinstance(value, str):
         return _render_template(value, context)
     if isinstance(value, list):
@@ -404,6 +428,7 @@ def _render_json_value(value: Any, context: dict[str, str]) -> Any:
 
 
 def _parse_json(text: str) -> Any:
+    """内部辅助函数：解析JSON。"""
     if not text:
         return {}
     try:
@@ -413,6 +438,7 @@ def _parse_json(text: str) -> Any:
 
 
 def _parse_error_detail(text: str) -> str:
+    """内部辅助函数：解析错误详情。"""
     parsed = _parse_json(text)
     if isinstance(parsed, dict):
         return str(_pick(parsed, "message", "msg", "errorMessage", "error", default=text[:1000]))
@@ -420,6 +446,7 @@ def _parse_error_detail(text: str) -> str:
 
 
 def _normalize_kind(value: str) -> str:
+    """内部辅助函数：归一化kind。"""
     kind = str(value or "").lower().strip()
     if kind in {"doc", "document", "adoc"}:
         return "adoc"
@@ -429,6 +456,7 @@ def _normalize_kind(value: str) -> str:
 
 
 def _pick(payload: Any, *keys: str, default: Any = None) -> Any:
+    """pick。"""
     for source in _dict_candidates(payload):
         for key in keys:
             value = source.get(key)
@@ -438,6 +466,7 @@ def _pick(payload: Any, *keys: str, default: Any = None) -> Any:
 
 
 def _safe_metadata(info: Any) -> dict[str, Any]:
+    """内部辅助函数：安全metadata。"""
     allowed = {
         "nodeId",
         "name",
@@ -457,6 +486,7 @@ def _safe_metadata(info: Any) -> dict[str, Any]:
 
 
 def _dict_candidates(payload: Any):
+    """内部辅助函数：dictcandidates。"""
     if not isinstance(payload, dict):
         return
     yield payload
@@ -467,6 +497,7 @@ def _dict_candidates(payload: Any):
 
 
 def _extract_sheets(sheet_list: Any) -> list[dict[str, Any]]:
+    """内部辅助函数：提取sheets。"""
     raw_sheets: Any = sheet_list
     if isinstance(sheet_list, dict):
         raw_sheets = (
@@ -498,6 +529,7 @@ def _extract_sheets(sheet_list: Any) -> list[dict[str, Any]]:
 
 
 def _first_sheet_id(sheets: list[dict[str, Any]]) -> str | None:
+    """内部辅助函数：第一个sheetID。"""
     if not sheets:
         return None
     value = sheets[0].get("sheetId")
@@ -505,6 +537,7 @@ def _first_sheet_id(sheets: list[dict[str, Any]]) -> str | None:
 
 
 def _parse_datetime(value: Any) -> datetime | None:
+    """内部辅助函数：解析datetime。"""
     if isinstance(value, datetime):
         if value.tzinfo is None:
             return value.replace(tzinfo=timezone.utc)
@@ -522,8 +555,10 @@ def _parse_datetime(value: Any) -> datetime | None:
 
 
 def _now_utc() -> datetime:
+    """内部辅助函数：nowutc。"""
     return datetime.now(timezone.utc)
 
 
 def _sanitize(text: str) -> str:
+    """sanitize。"""
     return SECRET_RE.sub(r"\1\2***", text)

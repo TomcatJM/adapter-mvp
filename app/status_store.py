@@ -6,11 +6,14 @@ from app.models import AdapterResult, AdapterStatus
 
 
 class InMemoryStatusStore:
+    """内存状态存储。"""
     def __init__(self) -> None:
+        """初始化对象。"""
         self._items: dict[str, AdapterStatus] = {}
         self._lock = Lock()
 
     def put(self, result: AdapterResult) -> None:
+        """写入状态。"""
         status = AdapterStatus(
             task_id=result.task_id,
             status=result.status,
@@ -22,6 +25,7 @@ class InMemoryStatusStore:
         self._put_db(status)
 
     def get(self, task_id: str) -> AdapterStatus:
+        """获取状态。"""
         with self._lock:
             status = self._items.get(task_id)
         if status is not None:
@@ -38,6 +42,7 @@ class InMemoryStatusStore:
         )
 
     def _put_db(self, status: AdapterStatus) -> None:
+        """内部辅助函数：写入数据库。"""
         if not db.configured():
             return
         try:
@@ -59,6 +64,7 @@ class InMemoryStatusStore:
             return
 
     def _get_db(self, task_id: str) -> AdapterStatus | None:
+        """内部辅助函数：获取数据库。"""
         if not db.configured():
             return None
         try:
@@ -82,6 +88,7 @@ class InMemoryStatusStore:
             return None
 
     def _parse_data(self, value) -> dict:
+        """内部辅助函数：解析数据。"""
         if not value:
             return {}
         if isinstance(value, dict):

@@ -13,10 +13,12 @@ _schema_ready = False
 
 
 class WorkflowLookupAmbiguousError(ValueError):
+    """WorkflowLookupAmbiguousError 异常类型。"""
     pass
 
 
 def configured() -> bool:
+    """判断当前配置是否已就绪。"""
     return all(
         os.getenv(name)
         for name in ["ADAPTER_DB_HOST", "ADAPTER_DB_NAME", "ADAPTER_DB_USER", "ADAPTER_DB_PASSWORD"]
@@ -25,6 +27,7 @@ def configured() -> bool:
 
 @contextmanager
 def connect() -> Iterator[Any]:
+    """建立连接。"""
     import pymysql
 
     conn = pymysql.connect(
@@ -47,6 +50,7 @@ def connect() -> Iterator[Any]:
 
 
 def ensure_schema() -> None:
+    """ensure结构。"""
     global _schema_ready
     if _schema_ready or not configured():
         return
@@ -360,6 +364,7 @@ def ensure_schema() -> None:
 
 
 def _ensure_comments(cursor) -> None:
+    """内部辅助函数：ensurecomments。"""
     statements = [
         "ALTER TABLE adapter_status COMMENT='Adapter任务状态表'",
         "ALTER TABLE adapter_status MODIFY task_id VARCHAR(128) COMMENT '任务ID'",
@@ -428,6 +433,7 @@ def _ensure_comments(cursor) -> None:
 
 
 def _migrate_yunxiao_project_members(cursor) -> None:
+    """内部辅助函数：migrate云效项目members。"""
     try:
         cursor.execute(
             """
@@ -489,6 +495,7 @@ def _migrate_yunxiao_project_members(cursor) -> None:
 
 
 def _migrate_dingtalk_app_config(cursor) -> None:
+    """内部辅助函数：migrate钉钉app配置。"""
     try:
         cursor.execute(
             """
@@ -592,6 +599,7 @@ def _migrate_dingtalk_app_config(cursor) -> None:
 
 
 def dumps(value: Any) -> str:
+    """dumps。"""
     return json.dumps(value or {}, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -606,6 +614,7 @@ def create_workflow_instance(
     context: dict[str, Any],
     created_by: str | None,
 ) -> dict[str, Any]:
+    """创建工作流instance。"""
     _require_configured()
     ensure_schema()
     with connect() as conn:
@@ -653,12 +662,14 @@ def create_workflow_instance(
 
 
 def find_workflow_instance(workflow_id: str) -> dict[str, Any] | None:
+    """查找工作流instance。"""
     _require_configured()
     ensure_schema()
     return _find_workflow_instance_by_clause("workflow_id = %s", (workflow_id,))
 
 
 def find_workflow_by_yunxiao_task_id(yunxiao_task_id: str) -> dict[str, Any] | None:
+    """查找工作流by云效任务ID。"""
     _require_configured()
     ensure_schema()
     if not yunxiao_task_id:
@@ -667,6 +678,7 @@ def find_workflow_by_yunxiao_task_id(yunxiao_task_id: str) -> dict[str, Any] | N
 
 
 def find_workflow_by_pipeline_build(pipeline_id: str, build_number: str) -> dict[str, Any] | None:
+    """查找工作流by流水线构建。"""
     _require_configured()
     ensure_schema()
     if not pipeline_id or not build_number:
@@ -678,6 +690,7 @@ def find_workflow_by_pipeline_build(pipeline_id: str, build_number: str) -> dict
 
 
 def find_workflow_by_branch_commit(branch_name: str, commit_id: str) -> dict[str, Any] | None:
+    """查找工作流by分支commit。"""
     _require_configured()
     ensure_schema()
     if not branch_name or not commit_id:
@@ -689,6 +702,7 @@ def find_workflow_by_branch_commit(branch_name: str, commit_id: str) -> dict[str
 
 
 def list_workflows_by_statuses(statuses: list[str] | tuple[str, ...] | set[str], limit: int = 50) -> list[dict[str, Any]]:
+    """列出workflowsbystatuses。"""
     _require_configured()
     ensure_schema()
     safe_statuses = [str(status).strip() for status in statuses if str(status or "").strip()]
@@ -731,6 +745,7 @@ def list_workflows_by_statuses(statuses: list[str] | tuple[str, ...] | set[str],
 
 
 def _find_workflow_instance_by_clause(where_clause: str, params: tuple[Any, ...]) -> dict[str, Any] | None:
+    """内部辅助函数：查找工作流instancebyclause。"""
     with connect() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -768,6 +783,7 @@ def _find_workflow_instance_by_clause(where_clause: str, params: tuple[Any, ...]
 
 
 def list_workflow_events(workflow_id: str, limit: int = 50) -> list[dict[str, Any]]:
+    """列出工作流events。"""
     _require_configured()
     ensure_schema()
     safe_limit = max(1, min(int(limit or 50), 200))
@@ -804,6 +820,7 @@ def update_workflow_doc_read(
     operator: str | None,
     event_payload: dict[str, Any],
 ) -> dict[str, Any]:
+    """更新工作流文档读取。"""
     return _update_workflow_state(
         workflow_id=workflow_id,
         expected_status=from_status,
@@ -824,6 +841,7 @@ def update_workflow_requirement(
     operator: str | None,
     event_payload: dict[str, Any],
 ) -> dict[str, Any]:
+    """更新工作流requirement。"""
     return _update_workflow_state(
         workflow_id=workflow_id,
         expected_status="DOC_READ",
@@ -847,6 +865,7 @@ def update_workflow_coding_result(
     operator: str | None,
     event_payload: dict[str, Any],
 ) -> dict[str, Any]:
+    """更新工作流编码结果。"""
     return _update_workflow_state(
         workflow_id=workflow_id,
         expected_status=from_status,
@@ -871,6 +890,7 @@ def update_workflow_yunxiao_task_created(
     operator: str | None,
     event_payload: dict[str, Any],
 ) -> dict[str, Any]:
+    """更新工作流云效任务已创建。"""
     return _update_workflow_state(
         workflow_id=workflow_id,
         expected_status=from_status,
@@ -892,6 +912,7 @@ def update_workflow_coding_requested(
     operator: str | None,
     event_payload: dict[str, Any],
 ) -> dict[str, Any]:
+    """更新工作流编码requested。"""
     return _update_workflow_state(
         workflow_id=workflow_id,
         expected_status="YUNXIAO_TASK_CREATED",
@@ -916,6 +937,7 @@ def update_workflow_pipeline_running(
     operator: str | None,
     event_payload: dict[str, Any],
 ) -> dict[str, Any]:
+    """更新工作流流水线running。"""
     return _update_workflow_state(
         workflow_id=workflow_id,
         expected_status="CODE_SUBMITTED",
@@ -945,6 +967,7 @@ def update_workflow_pipeline_success(
     operator: str | None,
     event_payload: dict[str, Any],
 ) -> dict[str, Any]:
+    """更新工作流流水线success。"""
     return _update_workflow_state(
         workflow_id=workflow_id,
         expected_status=from_status,
@@ -975,6 +998,7 @@ def update_workflow_pipeline_failed(
     error: str,
     event_payload: dict[str, Any],
 ) -> dict[str, Any]:
+    """更新工作流流水线failed。"""
     return _update_workflow_state(
         workflow_id=workflow_id,
         expected_status=from_status,
@@ -1000,6 +1024,7 @@ def update_workflow_apifox_synced(
     operator: str | None,
     event_payload: dict[str, Any],
 ) -> dict[str, Any]:
+    """更新工作流Apifoxsynced。"""
     return _update_workflow_state(
         workflow_id=workflow_id,
         expected_status="PIPELINE_SUCCESS",
@@ -1023,6 +1048,7 @@ def update_workflow_yunxiao_task_closed(
     event_type: str = "yunxiao_workitem_closed",
     message: str = "Yunxiao workitem closed",
 ) -> dict[str, Any]:
+    """更新工作流云效任务已关闭。"""
     return _update_workflow_state(
         workflow_id=workflow_id,
         expected_status="APIFOX_SYNCED",
@@ -1046,6 +1072,7 @@ def record_workflow_apifox_result(
     message: str,
     event_payload: dict[str, Any],
 ) -> dict[str, Any]:
+    """记录工作流Apifox结果。"""
     _require_configured()
     ensure_schema()
     clipped_message = str(message or "")[:1024]
@@ -1088,6 +1115,7 @@ def mark_workflow_needs_human(
     event_type: str,
     event_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """标记工作流needs人工。"""
     _require_configured()
     ensure_schema()
     clipped_error = str(error or "")[:2048]
@@ -1130,6 +1158,7 @@ def resolve_workflow_needs_human(
     reason: str | None,
     event_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """解析工作流needs人工。"""
     _require_configured()
     ensure_schema()
     clipped_reason = str(reason or "Workflow manually resolved")[:1024]
@@ -1172,6 +1201,7 @@ def retry_workflow_from_pipeline_failed(
     max_retry_count: int,
     event_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """重试工作流来自流水线failed。"""
     _require_configured()
     ensure_schema()
     clipped_reason = str(reason or "Workflow retry requested")[:1024]
@@ -1234,6 +1264,7 @@ def mark_workflow_failed(
     operator: str | None,
     event_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """标记工作流failed。"""
     _require_configured()
     ensure_schema()
     clipped_error = str(error or "")[:2048]
@@ -1277,6 +1308,7 @@ def record_workflow_error(
     event_type: str,
     event_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """记录工作流错误。"""
     _require_configured()
     ensure_schema()
     clipped_error = str(error or "")[:2048]
@@ -1311,6 +1343,7 @@ def record_workflow_error(
 
 
 def find_apifox_project_config(project_name: str) -> dict[str, Any] | None:
+    """查找Apifox项目配置。"""
     if not configured() or not project_name:
         return None
     try:
@@ -1340,6 +1373,7 @@ def find_apifox_project_config(project_name: str) -> dict[str, Any] | None:
 
 
 def find_apifox_pipeline_config(pipeline_id: str) -> dict[str, Any] | None:
+    """查找Apifox流水线配置。"""
     if not configured() or not pipeline_id:
         return None
     try:
@@ -1368,6 +1402,7 @@ def find_apifox_pipeline_config(pipeline_id: str) -> dict[str, Any] | None:
 
 
 def list_apifox_project_configs() -> list[dict[str, Any]]:
+    """列出Apifox项目configs。"""
     if not configured():
         return []
     try:
@@ -1396,6 +1431,7 @@ def list_apifox_project_configs() -> list[dict[str, Any]]:
 
 
 def upsert_apifox_pipeline_config(pipeline_id: str, project_name: str, remark: str | None = None) -> None:
+    """upsertApifox流水线配置。"""
     if not configured() or not pipeline_id or not project_name:
         return
     ensure_schema()
@@ -1414,6 +1450,7 @@ def upsert_apifox_pipeline_config(pipeline_id: str, project_name: str, remark: s
 
 
 def find_yunxiao_account_config(account_name: str) -> dict[str, Any] | None:
+    """查找云效account配置。"""
     if not configured() or not account_name:
         return None
     try:
@@ -1455,6 +1492,7 @@ def find_yunxiao_account_config(account_name: str) -> dict[str, Any] | None:
 
 
 def list_yunxiao_project_configs() -> list[dict[str, Any]]:
+    """列出云效项目configs。"""
     if not configured():
         return []
     try:
@@ -1484,6 +1522,7 @@ def list_yunxiao_project_configs() -> list[dict[str, Any]]:
 
 
 def find_yunxiao_project_config(project_name: str) -> dict[str, Any] | None:
+    """查找云效项目配置。"""
     if not configured() or not project_name:
         return None
     try:
@@ -1549,6 +1588,7 @@ def find_yunxiao_project_config(project_name: str) -> dict[str, Any] | None:
 
 
 def find_yunxiao_project_member(project_name: str, assignee: str) -> dict[str, Any] | None:
+    """查找云效项目成员。"""
     if not configured() or not project_name or not assignee:
         return None
     try:
@@ -1616,6 +1656,7 @@ def find_yunxiao_project_member(project_name: str, assignee: str) -> dict[str, A
 
 
 def find_default_yunxiao_project_member(project_name: str) -> dict[str, Any] | None:
+    """查找default云效项目成员。"""
     if not configured() or not project_name:
         return None
     try:
@@ -1679,6 +1720,7 @@ def find_default_yunxiao_project_member(project_name: str) -> dict[str, Any] | N
 
 
 def find_dingtalk_app_config(config_name: str) -> dict[str, Any] | None:
+    """查找钉钉app配置。"""
     if not configured() or not config_name:
         return None
     try:
@@ -1760,6 +1802,7 @@ def find_dingtalk_app_config(config_name: str) -> dict[str, Any] | None:
 
 
 def update_dingtalk_token_cache(config_name: str, access_token: str, token_expires_at: datetime) -> None:
+    """更新钉钉令牌缓存。"""
     if not configured() or not config_name:
         return
     try:
@@ -1810,6 +1853,7 @@ def _update_workflow_state(
     last_error: str | None = None,
     clear_error: bool = False,
 ) -> dict[str, Any]:
+    """内部辅助函数：更新工作流state。"""
     _require_configured()
     ensure_schema()
     assignments = ["status = %s", "context_json = %s"]
@@ -1878,6 +1922,7 @@ def _insert_workflow_event(
     message: str | None,
     payload: dict[str, Any] | None,
 ) -> None:
+    """内部辅助函数：插入工作流事件。"""
     cursor.execute(
         """
         INSERT INTO adapter_workflow_event (
@@ -1904,6 +1949,7 @@ def _insert_workflow_event(
 
 
 def _map_workflow_instance(row: dict[str, Any]) -> dict[str, Any]:
+    """内部辅助函数：map工作流instance。"""
     context = _json_or_none(row.get("context_json")) or {}
     return {
         "workflowId": row.get("workflow_id"),
@@ -1929,6 +1975,7 @@ def _map_workflow_instance(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _extract_yunxiao_task_display_id(context: dict[str, Any]) -> str | None:
+    """内部辅助函数：提取云效任务展示ID。"""
     if not isinstance(context, dict):
         return None
     yunxiao = context.get("yunxiao") if isinstance(context.get("yunxiao"), dict) else {}
@@ -1944,6 +1991,7 @@ def _extract_yunxiao_task_display_id(context: dict[str, Any]) -> str | None:
 
 
 def _map_workflow_event(row: dict[str, Any]) -> dict[str, Any]:
+    """内部辅助函数：map工作流事件。"""
     return {
         "id": row.get("id"),
         "workflowId": row.get("workflow_id"),
@@ -1958,6 +2006,7 @@ def _map_workflow_event(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def upsert_dingtalk_doc_config(config_name: str, changes: dict[str, Any]) -> dict[str, Any]:
+    """upsert钉钉文档配置。"""
     if not configured():
         raise RuntimeError("Database env is not configured")
     name = (config_name or "default").strip()
@@ -2086,6 +2135,7 @@ def upsert_dingtalk_doc_config(config_name: str, changes: dict[str, Any]) -> dic
 
 
 def _map_dingtalk_config(row: dict[str, Any]) -> dict[str, Any]:
+    """内部辅助函数：map钉钉配置。"""
     return {
         "configName": row.get("config_name"),
         "appName": row.get("app_name"),
@@ -2113,6 +2163,7 @@ def _map_dingtalk_config(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _doc_config_values(config_name: str, current: dict[str, Any], changes: dict[str, Any]) -> dict[str, Any]:
+    """内部辅助函数：文档配置values。"""
     app_name = _changed_value(changes, "app_name", current.get("app_name"))
     if not app_name:
         app_name = os.getenv("DINGTALK_APP_NAME") or "JDB小钉"
@@ -2153,21 +2204,25 @@ def _doc_config_values(config_name: str, current: dict[str, Any], changes: dict[
 
 
 def _changed_value(changes: dict[str, Any], key: str, current: Any) -> Any:
+    """内部辅助函数：changed值。"""
     return changes[key] if key in changes else current
 
 
 def _method_value(changes: dict[str, Any], current: dict[str, Any], key: str) -> str:
+    """内部辅助函数：method值。"""
     value = _changed_value(changes, key, current.get(key) or "GET")
     return str(value or "GET").upper()
 
 
 def _nullable_text(value: Any) -> str | None:
+    """内部辅助函数：nullable文本。"""
     if value in (None, ""):
         return None
     return str(value).strip() or None
 
 
 def _json_text_or_none(value: Any) -> str | None:
+    """内部辅助函数：JSON文本ornone。"""
     if value in (None, ""):
         return None
     if isinstance(value, str):
@@ -2179,6 +2234,7 @@ def _json_text_or_none(value: Any) -> str | None:
 
 
 def _doc_config_tuple(values: dict[str, Any]) -> tuple[Any, ...]:
+    """内部辅助函数：文档配置tuple。"""
     return (
         values["config_name"],
         values["app_name"],
@@ -2200,6 +2256,7 @@ def _doc_config_tuple(values: dict[str, Any]) -> tuple[Any, ...]:
 
 
 def _doc_config_summary(values: dict[str, Any]) -> dict[str, Any]:
+    """内部辅助函数：文档配置摘要。"""
     return {
         "configName": values["config_name"],
         "appName": values["app_name"],
@@ -2214,6 +2271,7 @@ def _doc_config_summary(values: dict[str, Any]) -> dict[str, Any]:
 
 
 def _json_or_none(value: Any) -> Any:
+    """内部辅助函数：JSONornone。"""
     if value in (None, ""):
         return None
     if isinstance(value, (dict, list)):
@@ -2225,6 +2283,7 @@ def _json_or_none(value: Any) -> Any:
 
 
 def _iso_or_none(value: Any) -> str | None:
+    """内部辅助函数：isoornone。"""
     if isinstance(value, datetime):
         return value.isoformat()
     if value in (None, ""):
@@ -2233,5 +2292,6 @@ def _iso_or_none(value: Any) -> str | None:
 
 
 def _require_configured() -> None:
+    """内部辅助函数：要求已配置。"""
     if not configured():
         raise RuntimeError("Database env is not configured")

@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", default=r"D:\document\up\mysql.xlsx")
-    parser.add_argument("--schema", default=str(ROOT / "sql" / "mysql_schema.sql"))
+    parser.add_argument("--schema", default=str(ROOT / "delivery" / "sql" / "mysql_schema.sql"))
     args = parser.parse_args()
 
     cfg = read_mysql_excel(Path(args.source))
