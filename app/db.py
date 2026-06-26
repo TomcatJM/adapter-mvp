@@ -141,11 +141,13 @@ def ensure_schema() -> None:
                         id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
                         pipeline_id VARCHAR(64) NOT NULL COMMENT '云效流水线ID',
                         project_name VARCHAR(128) NOT NULL COMMENT '项目名称，例如 jdb-order',
+                        apifox_project_config_id BIGINT NULL COMMENT 'Apifox项目配置主键ID，关联adapter_apifox_project_config.id',
                         remark VARCHAR(512) NULL COMMENT '备注',
                         created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
                         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                             ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
                         UNIQUE KEY uk_adapter_apifox_pipeline_id (pipeline_id),
+                        KEY idx_adapter_apifox_pipeline_project_config_id (apifox_project_config_id),
                         KEY idx_adapter_apifox_pipeline_project_name (project_name)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter Apifox流水线项目映射配置表'
                     """
@@ -175,6 +177,7 @@ def ensure_schema() -> None:
                         id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
                         project_name VARCHAR(128) NOT NULL COMMENT '业务项目名称，例如 jdb-school-crm',
                         account_name VARCHAR(128) NOT NULL COMMENT '云效账号配置名称，关联adapter_yunxiao_account_config.account_name',
+                        account_config_id BIGINT NULL COMMENT '云效账号配置主键ID，关联adapter_yunxiao_account_config.id',
                         organization_id VARCHAR(128) NOT NULL COMMENT '云效企业/组织ID',
                         project_id VARCHAR(128) NOT NULL COMMENT '云效项目ID或spaceIdentifier',
                         sprint_id VARCHAR(128) NULL COMMENT '云效迭代ID，旧接口可选',
@@ -199,6 +202,7 @@ def ensure_schema() -> None:
                         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                             ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
                         UNIQUE KEY uk_adapter_yunxiao_project_name (project_name),
+                        KEY idx_adapter_yunxiao_project_account_config_id (account_config_id),
                         KEY idx_adapter_yunxiao_project_account_name (account_name),
                         KEY idx_adapter_yunxiao_project_id (project_id)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter云效项目映射配置表'
@@ -226,7 +230,9 @@ def ensure_schema() -> None:
                     CREATE TABLE IF NOT EXISTS adapter_yunxiao_project_member_relation (
                         id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
                         project_name VARCHAR(128) NOT NULL COMMENT '业务项目名称，例如 jdb-school-crm',
+                        project_config_id BIGINT NULL COMMENT '云效项目配置主键ID，关联adapter_yunxiao_project_config.id',
                         yunxiao_account_id VARCHAR(128) NOT NULL COMMENT '云效账号ID，关联adapter_yunxiao_member.yunxiao_account_id',
+                        member_id BIGINT NULL COMMENT '云效人员主键ID，关联adapter_yunxiao_member.id',
                         is_default TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否项目默认负责人：1是，0否',
                         enabled TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否启用：1启用，0停用',
                         remark VARCHAR(512) NULL COMMENT '备注',
@@ -234,6 +240,8 @@ def ensure_schema() -> None:
                         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                             ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
                         UNIQUE KEY uk_adapter_yunxiao_project_member_relation (project_name, yunxiao_account_id),
+                        KEY idx_adapter_yunxiao_project_member_relation_project_id (project_config_id),
+                        KEY idx_adapter_yunxiao_project_member_relation_member_id (member_id),
                         KEY idx_adapter_yunxiao_project_member_relation_default (project_name, is_default, enabled),
                         KEY idx_adapter_yunxiao_project_member_relation_account (yunxiao_account_id)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter云效项目人员关联表'
@@ -387,6 +395,7 @@ def ensure_schema() -> None:
                 _ensure_comments(cursor)
                 _migrate_yunxiao_project_members(cursor)
                 _migrate_dingtalk_app_config(cursor)
+                _backfill_config_relation_ids(cursor)
         _schema_ready = True
 
 
@@ -433,6 +442,9 @@ def _ensure_comments(cursor) -> None:
         "ALTER TABLE adapter_apifox_pipeline_config MODIFY id BIGINT NOT NULL AUTO_INCREMENT COMMENT '自增主键'",
         "ALTER TABLE adapter_apifox_pipeline_config MODIFY pipeline_id VARCHAR(64) NOT NULL COMMENT '云效流水线ID'",
         "ALTER TABLE adapter_apifox_pipeline_config MODIFY project_name VARCHAR(128) NOT NULL COMMENT '项目名称，例如 jdb-order'",
+        "ALTER TABLE adapter_apifox_pipeline_config ADD COLUMN apifox_project_config_id BIGINT NULL COMMENT 'Apifox项目配置主键ID，关联adapter_apifox_project_config.id' AFTER project_name",
+        "ALTER TABLE adapter_apifox_pipeline_config MODIFY apifox_project_config_id BIGINT NULL COMMENT 'Apifox项目配置主键ID，关联adapter_apifox_project_config.id'",
+        "ALTER TABLE adapter_apifox_pipeline_config ADD INDEX idx_adapter_apifox_pipeline_project_config_id (apifox_project_config_id)",
         "ALTER TABLE adapter_apifox_pipeline_config MODIFY remark VARCHAR(512) NULL COMMENT '备注'",
         "ALTER TABLE adapter_apifox_pipeline_config MODIFY created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'",
         "ALTER TABLE adapter_apifox_pipeline_config MODIFY updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'",
@@ -442,6 +454,9 @@ def _ensure_comments(cursor) -> None:
         "ALTER TABLE adapter_yunxiao_account_config MODIFY access_key_secret VARCHAR(1024) NULL COMMENT '阿里云AccessKey Secret，acs_ak必填'",
         "ALTER TABLE adapter_yunxiao_account_config ADD COLUMN legacy_token TEXT NULL COMMENT '旧云效Token，legacy_token必填' AFTER access_key_secret",
         "ALTER TABLE adapter_yunxiao_project_config COMMENT='Adapter云效项目映射配置表'",
+        "ALTER TABLE adapter_yunxiao_project_config ADD COLUMN account_config_id BIGINT NULL COMMENT '云效账号配置主键ID，关联adapter_yunxiao_account_config.id' AFTER account_name",
+        "ALTER TABLE adapter_yunxiao_project_config MODIFY account_config_id BIGINT NULL COMMENT '云效账号配置主键ID，关联adapter_yunxiao_account_config.id'",
+        "ALTER TABLE adapter_yunxiao_project_config ADD INDEX idx_adapter_yunxiao_project_account_config_id (account_config_id)",
         "ALTER TABLE adapter_yunxiao_project_config ADD COLUMN sprint_id VARCHAR(128) NULL COMMENT '云效迭代ID，旧接口可选' AFTER project_id",
         "ALTER TABLE adapter_yunxiao_project_config MODIFY workitem_category VARCHAR(32) NOT NULL DEFAULT 'Req' COMMENT '云效需求工作项分类，例如 Req'",
         "ALTER TABLE adapter_yunxiao_project_config MODIFY workitem_type_identifier VARCHAR(128) NOT NULL COMMENT '云效需求工作项类型ID'",
@@ -455,6 +470,12 @@ def _ensure_comments(cursor) -> None:
         "ALTER TABLE adapter_yunxiao_project_config ADD COLUMN close_transition_id VARCHAR(128) NULL COMMENT '云效关闭流转ID，优先于done_status_id' AFTER comment_format_type",
         "ALTER TABLE adapter_yunxiao_member COMMENT='Adapter云效人员表'",
         "ALTER TABLE adapter_yunxiao_project_member_relation COMMENT='Adapter云效项目人员关联表'",
+        "ALTER TABLE adapter_yunxiao_project_member_relation ADD COLUMN project_config_id BIGINT NULL COMMENT '云效项目配置主键ID，关联adapter_yunxiao_project_config.id' AFTER project_name",
+        "ALTER TABLE adapter_yunxiao_project_member_relation MODIFY project_config_id BIGINT NULL COMMENT '云效项目配置主键ID，关联adapter_yunxiao_project_config.id'",
+        "ALTER TABLE adapter_yunxiao_project_member_relation ADD COLUMN member_id BIGINT NULL COMMENT '云效人员主键ID，关联adapter_yunxiao_member.id' AFTER yunxiao_account_id",
+        "ALTER TABLE adapter_yunxiao_project_member_relation MODIFY member_id BIGINT NULL COMMENT '云效人员主键ID，关联adapter_yunxiao_member.id'",
+        "ALTER TABLE adapter_yunxiao_project_member_relation ADD INDEX idx_adapter_yunxiao_project_member_relation_project_id (project_config_id)",
+        "ALTER TABLE adapter_yunxiao_project_member_relation ADD INDEX idx_adapter_yunxiao_project_member_relation_member_id (member_id)",
         "ALTER TABLE adapter_yunxiao_project_member COMMENT='Adapter云效项目人员配置表'",
         "ALTER TABLE adapter_dingtalk_app_config COMMENT='Adapter钉钉文档读取旧版混合配置表'",
         "ALTER TABLE adapter_dingtalk_app_config ADD COLUMN operator_id VARCHAR(128) NULL COMMENT '钉钉文档操作人userId' AFTER token_header_name",
@@ -528,6 +549,49 @@ def _migrate_yunxiao_project_members(cursor) -> None:
         )
     except Exception:
         pass
+
+
+def _backfill_config_relation_ids(cursor) -> None:
+    """回填配置表之间的主键关联ID。"""
+    statements = [
+        """
+        UPDATE adapter_yunxiao_project_config project
+        JOIN adapter_yunxiao_account_config account
+          ON LOWER(account.account_name) = LOWER(project.account_name)
+        SET project.account_config_id = account.id
+        WHERE project.account_config_id IS NULL
+           OR project.account_config_id <> account.id
+        """,
+        """
+        UPDATE adapter_yunxiao_project_member_relation rel
+        JOIN adapter_yunxiao_project_config project
+          ON LOWER(project.project_name) = LOWER(rel.project_name)
+        SET rel.project_config_id = project.id
+        WHERE rel.project_config_id IS NULL
+           OR rel.project_config_id <> project.id
+        """,
+        """
+        UPDATE adapter_yunxiao_project_member_relation rel
+        JOIN adapter_yunxiao_member member
+          ON member.yunxiao_account_id = rel.yunxiao_account_id
+        SET rel.member_id = member.id
+        WHERE rel.member_id IS NULL
+           OR rel.member_id <> member.id
+        """,
+        """
+        UPDATE adapter_apifox_pipeline_config pipeline
+        JOIN adapter_apifox_project_config project
+          ON LOWER(project.project_name) = LOWER(pipeline.project_name)
+        SET pipeline.apifox_project_config_id = project.id
+        WHERE pipeline.apifox_project_config_id IS NULL
+           OR pipeline.apifox_project_config_id <> project.id
+        """,
+    ]
+    for statement in statements:
+        try:
+            cursor.execute(statement)
+        except Exception:
+            pass
 
 
 def _migrate_dingtalk_app_config(cursor) -> None:
@@ -1486,7 +1550,7 @@ def find_apifox_project_config(project_name: str) -> dict[str, Any] | None:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT project_name, apifox_project_id, openapi_url, remark
+                    SELECT id, project_name, apifox_project_id, openapi_url, remark
                     FROM adapter_apifox_project_config
                     WHERE LOWER(project_name) = LOWER(%s)
                     LIMIT 1
@@ -1498,6 +1562,7 @@ def find_apifox_project_config(project_name: str) -> dict[str, Any] | None:
             return None
         return {
             "projectName": row.get("project_name"),
+            "apifoxProjectConfigId": row.get("id"),
             "apifoxProjectId": row.get("apifox_project_id"),
             "openapiUrl": row.get("openapi_url"),
             "remark": row.get("remark"),
@@ -1516,7 +1581,7 @@ def find_apifox_pipeline_config(pipeline_id: str) -> dict[str, Any] | None:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT pipeline_id, project_name, remark
+                    SELECT pipeline_id, project_name, apifox_project_config_id, remark
                     FROM adapter_apifox_pipeline_config
                     WHERE pipeline_id = %s
                     LIMIT 1
@@ -1529,6 +1594,7 @@ def find_apifox_pipeline_config(pipeline_id: str) -> dict[str, Any] | None:
         return {
             "pipelineId": row.get("pipeline_id"),
             "projectName": row.get("project_name"),
+            "apifoxProjectConfigId": row.get("apifox_project_config_id"),
             "remark": row.get("remark"),
         }
     except Exception:
@@ -1545,7 +1611,7 @@ def list_apifox_project_configs() -> list[dict[str, Any]]:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT project_name, apifox_project_id, openapi_url, remark
+                    SELECT id, project_name, apifox_project_id, openapi_url, remark
                     FROM adapter_apifox_project_config
                     ORDER BY project_name
                     """
@@ -1554,6 +1620,7 @@ def list_apifox_project_configs() -> list[dict[str, Any]]:
         return [
             {
                 "projectName": row.get("project_name"),
+                "apifoxProjectConfigId": row.get("id"),
                 "apifoxProjectId": row.get("apifox_project_id"),
                 "openapiUrl": row.get("openapi_url"),
                 "remark": row.get("remark"),
@@ -1571,16 +1638,56 @@ def upsert_apifox_pipeline_config(pipeline_id: str, project_name: str, remark: s
     ensure_schema()
     with connect() as conn:
         with conn.cursor() as cursor:
+            apifox_project_config_id = _find_id_by_name(
+                cursor,
+                table="adapter_apifox_project_config",
+                name_column="project_name",
+                name_value=project_name,
+            )
             cursor.execute(
                 """
-                INSERT INTO adapter_apifox_pipeline_config (pipeline_id, project_name, remark)
-                VALUES (%s, %s, %s)
+                INSERT INTO adapter_apifox_pipeline_config (
+                    pipeline_id,
+                    project_name,
+                    apifox_project_config_id,
+                    remark
+                )
+                VALUES (%s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     project_name = VALUES(project_name),
+                    apifox_project_config_id = VALUES(apifox_project_config_id),
                     remark = VALUES(remark)
                 """,
-                (pipeline_id, project_name, remark),
+                (pipeline_id, project_name, apifox_project_config_id, remark),
             )
+
+
+def _find_id_by_name(cursor, *, table: str, name_column: str, name_value: str | None) -> int | None:
+    """按唯一业务名称查找配置表主键。"""
+    if not name_value:
+        return None
+    if table not in {
+        "adapter_apifox_project_config",
+        "adapter_yunxiao_account_config",
+        "adapter_yunxiao_project_config",
+        "adapter_yunxiao_member",
+    }:
+        raise ValueError(f"Unsupported table for id lookup: {table}")
+    if name_column not in {"project_name", "account_name", "yunxiao_account_id"}:
+        raise ValueError(f"Unsupported column for id lookup: {name_column}")
+    cursor.execute(
+        f"""
+        SELECT id
+        FROM {table}
+        WHERE LOWER({name_column}) = LOWER(%s)
+        LIMIT 1
+        """,
+        (name_value,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return row.get("id")
 
 
 def find_yunxiao_account_config(account_name: str) -> dict[str, Any] | None:
@@ -1635,7 +1742,7 @@ def list_yunxiao_project_configs() -> list[dict[str, Any]]:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT project_name, account_name, organization_id, project_id, remark
+                    SELECT id, project_name, account_config_id, account_name, organization_id, project_id, remark
                     FROM adapter_yunxiao_project_config
                     ORDER BY project_name
                     """
@@ -1644,6 +1751,8 @@ def list_yunxiao_project_configs() -> list[dict[str, Any]]:
         return [
             {
                 "projectName": row.get("project_name"),
+                "projectConfigId": row.get("id"),
+                "accountConfigId": row.get("account_config_id"),
                 "accountName": row.get("account_name"),
                 "organizationId": row.get("organization_id"),
                 "projectId": row.get("project_id"),
@@ -1667,6 +1776,8 @@ def find_yunxiao_project_config(project_name: str) -> dict[str, Any] | None:
                     """
                     SELECT
                         project_name,
+                        id,
+                        account_config_id,
                         account_name,
                         organization_id,
                         project_id,
@@ -1699,6 +1810,8 @@ def find_yunxiao_project_config(project_name: str) -> dict[str, Any] | None:
             return None
         return {
             "projectName": row.get("project_name"),
+            "projectConfigId": row.get("id"),
+            "accountConfigId": row.get("account_config_id"),
             "accountName": row.get("account_name"),
             "organizationId": row.get("organization_id"),
             "projectId": row.get("project_id"),
@@ -1737,6 +1850,8 @@ def find_yunxiao_project_member(project_name: str, assignee: str) -> dict[str, A
                     """
                     SELECT
                         rel.project_name,
+                        rel.project_config_id,
+                        rel.member_id,
                         member.member_name,
                         member.yunxiao_account_id,
                         rel.is_default,
@@ -1783,6 +1898,8 @@ def find_yunxiao_project_member(project_name: str, assignee: str) -> dict[str, A
             return None
         return {
             "projectName": row.get("project_name"),
+            "projectConfigId": row.get("project_config_id"),
+            "memberId": row.get("member_id"),
             "name": row.get("member_name"),
             "accountId": row.get("yunxiao_account_id"),
             "isDefault": bool(row.get("is_default")),
@@ -1805,6 +1922,8 @@ def find_default_yunxiao_project_member(project_name: str) -> dict[str, Any] | N
                     """
                     SELECT
                         rel.project_name,
+                        rel.project_config_id,
+                        rel.member_id,
                         member.member_name,
                         member.yunxiao_account_id,
                         rel.is_default,
@@ -1847,6 +1966,8 @@ def find_default_yunxiao_project_member(project_name: str) -> dict[str, Any] | N
             return None
         return {
             "projectName": row.get("project_name"),
+            "projectConfigId": row.get("project_config_id"),
+            "memberId": row.get("member_id"),
             "name": row.get("member_name"),
             "accountId": row.get("yunxiao_account_id"),
             "isDefault": bool(row.get("is_default")),

@@ -233,12 +233,19 @@ def main() -> None:
                         args.remark or None,
                     ),
                 )
+            account_config_id = _find_id_by_name(
+                cursor,
+                table="adapter_yunxiao_account_config",
+                name_column="account_name",
+                name_value=args.account_name,
+            )
             if not args.member_only and not args.person_only:
                 cursor.execute(
                     """
                     INSERT INTO adapter_yunxiao_project_config (
                         project_name,
                         account_name,
+                        account_config_id,
                         organization_id,
                         project_id,
                         sprint_id,
@@ -260,9 +267,10 @@ def main() -> None:
                         close_transition_id,
                         remark
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON DUPLICATE KEY UPDATE
                         account_name = VALUES(account_name),
+                        account_config_id = VALUES(account_config_id),
                         organization_id = VALUES(organization_id),
                         project_id = VALUES(project_id),
                         sprint_id = VALUES(sprint_id),
@@ -287,6 +295,7 @@ def main() -> None:
                     (
                         args.project_name,
                         args.account_name,
+                        account_config_id,
                         args.organization_id,
                         args.project_id,
                         args.sprint_id,
@@ -309,6 +318,14 @@ def main() -> None:
                         args.remark or None,
                     ),
                 )
+            project_config_id = None
+            if not args.person_only and args.project_name:
+                project_config_id = _find_id_by_name(
+                    cursor,
+                    table="adapter_yunxiao_project_config",
+                    name_column="project_name",
+                    name_value=args.project_name,
+                )
             if args.member_name and args.member_account_id:
                 cursor.execute(
                     """
@@ -330,14 +347,21 @@ def main() -> None:
                         args.remark or None,
                     ),
                 )
+                member_id = _find_id_by_name(
+                    cursor,
+                    table="adapter_yunxiao_member",
+                    name_column="yunxiao_account_id",
+                    name_value=args.member_account_id,
+                )
                 if not args.person_only and args.member_default:
                     cursor.execute(
                         """
                         UPDATE adapter_yunxiao_project_member_relation
                         SET is_default = 0
-                        WHERE LOWER(project_name) = LOWER(%s)
+                        WHERE project_config_id = %s
+                           OR LOWER(project_name) = LOWER(%s)
                         """,
-                        (args.project_name,),
+                        (project_config_id, args.project_name),
                     )
                     cursor.execute(
                         """
@@ -352,20 +376,26 @@ def main() -> None:
                         """
                         INSERT INTO adapter_yunxiao_project_member_relation (
                             project_name,
+                            project_config_id,
                             yunxiao_account_id,
+                            member_id,
                             is_default,
                             enabled,
                             remark
                         )
-                        VALUES (%s, %s, %s, 1, %s)
+                        VALUES (%s, %s, %s, %s, %s, 1, %s)
                         ON DUPLICATE KEY UPDATE
+                            project_config_id = VALUES(project_config_id),
+                            member_id = VALUES(member_id),
                             is_default = VALUES(is_default),
                             enabled = 1,
                             remark = VALUES(remark)
                         """,
                         (
                             args.project_name,
+                            project_config_id,
                             args.member_account_id,
+                            member_id,
                             1 if args.member_default else 0,
                             args.remark or None,
                         ),
@@ -430,6 +460,32 @@ def _read_legacy_config(path: str | None) -> dict:
     if not isinstance(data, dict):
         raise SystemExit(f"Legacy Yunxiao config must be a JSON object: {expanded}")
     return data
+
+
+def _find_id_by_name(cursor, *, table: str, name_column: str, name_value: str | None) -> int | None:
+    if not name_value:
+        return None
+    if table not in {
+        "adapter_yunxiao_account_config",
+        "adapter_yunxiao_project_config",
+        "adapter_yunxiao_member",
+    }:
+        raise ValueError(f"Unsupported table for id lookup: {table}")
+    if name_column not in {"account_name", "project_name", "yunxiao_account_id"}:
+        raise ValueError(f"Unsupported column for id lookup: {name_column}")
+    cursor.execute(
+        f"""
+        SELECT id
+        FROM {table}
+        WHERE LOWER({name_column}) = LOWER(%s)
+        LIMIT 1
+        """,
+        (name_value,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return row.get("id")
 
 
 if __name__ == "__main__":

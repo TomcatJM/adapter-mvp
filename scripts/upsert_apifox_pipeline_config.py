@@ -37,21 +37,53 @@ def main() -> None:
     db.ensure_schema()
     with db.connect() as conn:
         with conn.cursor() as cursor:
+            apifox_project_config_id = _find_id_by_name(
+                cursor,
+                table="adapter_apifox_project_config",
+                name_column="project_name",
+                name_value=args.project_name,
+            )
             cursor.execute(
                 """
-                INSERT INTO adapter_apifox_pipeline_config (pipeline_id, project_name, remark)
-                VALUES (%s, %s, %s)
+                INSERT INTO adapter_apifox_pipeline_config (
+                    pipeline_id,
+                    project_name,
+                    apifox_project_config_id,
+                    remark
+                )
+                VALUES (%s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     project_name = VALUES(project_name),
+                    apifox_project_config_id = VALUES(apifox_project_config_id),
                     remark = VALUES(remark)
                 """,
-                (args.pipeline_id, args.project_name, args.remark or None),
+                (args.pipeline_id, args.project_name, apifox_project_config_id, args.remark or None),
             )
 
     print(
         "apifox pipeline config upserted: "
         f"pipelineId={args.pipeline_id}, projectName={args.project_name}"
     )
+
+
+def _find_id_by_name(cursor, *, table: str, name_column: str, name_value: str) -> int | None:
+    if table not in {"adapter_apifox_project_config"}:
+        raise ValueError(f"Unsupported table for id lookup: {table}")
+    if name_column not in {"project_name"}:
+        raise ValueError(f"Unsupported column for id lookup: {name_column}")
+    cursor.execute(
+        f"""
+        SELECT id
+        FROM {table}
+        WHERE LOWER({name_column}) = LOWER(%s)
+        LIMIT 1
+        """,
+        (name_value,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return row.get("id")
 
 
 if __name__ == "__main__":

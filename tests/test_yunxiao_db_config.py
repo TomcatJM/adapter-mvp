@@ -63,7 +63,9 @@ class YunxiaoDbConfigTest(unittest.TestCase):
         cursor.__enter__.return_value = cursor
         cursor.__exit__.return_value = False
         cursor.fetchone.return_value = {
+            "id": 11,
             "project_name": "jdb-school-crm",
+            "account_config_id": 7,
             "account_name": "main-ak",
             "organization_id": "org-1",
             "project_id": "project-1",
@@ -95,6 +97,8 @@ class YunxiaoDbConfigTest(unittest.TestCase):
         self.assertIsNotNone(result)
         assert result is not None
         self.assertEqual(result["projectName"], "jdb-school-crm")
+        self.assertEqual(result["projectConfigId"], 11)
+        self.assertEqual(result["accountConfigId"], 7)
         self.assertEqual(result["accountName"], "main-ak")
         self.assertEqual(result["organizationId"], "org-1")
         self.assertEqual(result["projectId"], "project-1")
@@ -152,14 +156,18 @@ class YunxiaoDbConfigTest(unittest.TestCase):
         cursor.__exit__.return_value = False
         cursor.fetchall.return_value = [
             {
+                "id": 12,
                 "project_name": "jdb-demo",
+                "account_config_id": 7,
                 "account_name": "yunxiao-personal-token",
                 "organization_id": "org-1",
                 "project_id": "project-1",
                 "remark": "demo",
             },
             {
+                "id": 13,
                 "project_name": "jdb-school-crm",
+                "account_config_id": 7,
                 "account_name": "yunxiao-personal-token",
                 "organization_id": "org-1",
                 "project_id": "project-1",
@@ -177,6 +185,8 @@ class YunxiaoDbConfigTest(unittest.TestCase):
             [
                 {
                     "projectName": "jdb-demo",
+                    "projectConfigId": 12,
+                    "accountConfigId": 7,
                     "accountName": "yunxiao-personal-token",
                     "organizationId": "org-1",
                     "projectId": "project-1",
@@ -184,6 +194,8 @@ class YunxiaoDbConfigTest(unittest.TestCase):
                 },
                 {
                     "projectName": "jdb-school-crm",
+                    "projectConfigId": 13,
+                    "accountConfigId": 7,
                     "accountName": "yunxiao-personal-token",
                     "organizationId": "org-1",
                     "projectId": "project-1",
@@ -200,7 +212,9 @@ class YunxiaoDbConfigTest(unittest.TestCase):
         cursor.__enter__.return_value = cursor
         cursor.__exit__.return_value = False
         cursor.fetchone.return_value = {
+            "project_config_id": 11,
             "project_name": "jdb-school-crm",
+            "member_id": 21,
             "member_name": "姬志猛",
             "yunxiao_account_id": "user-jzm",
             "is_default": 1,
@@ -216,6 +230,8 @@ class YunxiaoDbConfigTest(unittest.TestCase):
         self.assertIsNotNone(result)
         assert result is not None
         self.assertEqual(result["projectName"], "jdb-school-crm")
+        self.assertEqual(result["projectConfigId"], 11)
+        self.assertEqual(result["memberId"], 21)
         self.assertEqual(result["name"], "姬志猛")
         self.assertEqual(result["accountId"], "user-jzm")
         self.assertTrue(result["isDefault"])
@@ -230,7 +246,9 @@ class YunxiaoDbConfigTest(unittest.TestCase):
         cursor.__enter__.return_value = cursor
         cursor.__exit__.return_value = False
         cursor.fetchone.return_value = {
+            "project_config_id": 11,
             "project_name": "jdb-school-crm",
+            "member_id": 21,
             "member_name": "姬志猛",
             "yunxiao_account_id": "user-jzm",
             "is_default": 1,
@@ -245,6 +263,8 @@ class YunxiaoDbConfigTest(unittest.TestCase):
 
         self.assertIsNotNone(result)
         assert result is not None
+        self.assertEqual(result["projectConfigId"], 11)
+        self.assertEqual(result["memberId"], 21)
         self.assertEqual(result["name"], "姬志猛")
         self.assertEqual(result["accountId"], "user-jzm")
         sql = cursor.execute.call_args.args[0]

@@ -65,11 +65,13 @@ CREATE TABLE IF NOT EXISTS adapter_apifox_pipeline_config (
     id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
     pipeline_id VARCHAR(64) NOT NULL COMMENT '云效流水线ID',
     project_name VARCHAR(128) NOT NULL COMMENT '项目名称，例如 jdb-order',
+    apifox_project_config_id BIGINT NULL COMMENT 'Apifox项目配置主键ID，关联adapter_apifox_project_config.id',
     remark VARCHAR(512) NULL COMMENT '备注',
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     UNIQUE KEY uk_adapter_apifox_pipeline_id (pipeline_id),
+    KEY idx_adapter_apifox_pipeline_project_config_id (apifox_project_config_id),
     KEY idx_adapter_apifox_pipeline_project_name (project_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter Apifox流水线项目映射配置表';
 
@@ -93,6 +95,7 @@ CREATE TABLE IF NOT EXISTS adapter_yunxiao_project_config (
     id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
     project_name VARCHAR(128) NOT NULL COMMENT '业务项目名称，例如 jdb-school-crm',
     account_name VARCHAR(128) NOT NULL COMMENT '云效账号配置名称，关联adapter_yunxiao_account_config.account_name',
+    account_config_id BIGINT NULL COMMENT '云效账号配置主键ID，关联adapter_yunxiao_account_config.id',
     organization_id VARCHAR(128) NOT NULL COMMENT '云效企业/组织ID',
     project_id VARCHAR(128) NOT NULL COMMENT '云效项目ID或spaceIdentifier',
     sprint_id VARCHAR(128) NULL COMMENT '云效迭代ID，旧接口可选',
@@ -117,6 +120,7 @@ CREATE TABLE IF NOT EXISTS adapter_yunxiao_project_config (
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     UNIQUE KEY uk_adapter_yunxiao_project_name (project_name),
+    KEY idx_adapter_yunxiao_project_account_config_id (account_config_id),
     KEY idx_adapter_yunxiao_project_account_name (account_name),
     KEY idx_adapter_yunxiao_project_id (project_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter云效项目映射配置表';
@@ -138,7 +142,9 @@ CREATE TABLE IF NOT EXISTS adapter_yunxiao_member (
 CREATE TABLE IF NOT EXISTS adapter_yunxiao_project_member_relation (
     id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
     project_name VARCHAR(128) NOT NULL COMMENT '业务项目名称，例如 jdb-school-crm',
+    project_config_id BIGINT NULL COMMENT '云效项目配置主键ID，关联adapter_yunxiao_project_config.id',
     yunxiao_account_id VARCHAR(128) NOT NULL COMMENT '云效账号ID，关联adapter_yunxiao_member.yunxiao_account_id',
+    member_id BIGINT NULL COMMENT '云效人员主键ID，关联adapter_yunxiao_member.id',
     is_default TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否项目默认负责人：1是，0否',
     enabled TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否启用：1启用，0停用',
     remark VARCHAR(512) NULL COMMENT '备注',
@@ -146,6 +152,8 @@ CREATE TABLE IF NOT EXISTS adapter_yunxiao_project_member_relation (
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     UNIQUE KEY uk_adapter_yunxiao_project_member_relation (project_name, yunxiao_account_id),
+    KEY idx_adapter_yunxiao_project_member_relation_project_id (project_config_id),
+    KEY idx_adapter_yunxiao_project_member_relation_member_id (member_id),
     KEY idx_adapter_yunxiao_project_member_relation_default (project_name, is_default, enabled),
     KEY idx_adapter_yunxiao_project_member_relation_account (yunxiao_account_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter云效项目人员关联表';
