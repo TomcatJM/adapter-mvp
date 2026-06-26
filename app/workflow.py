@@ -13,7 +13,7 @@ from app.models import (
     WorkflowRetryRequest,
     WorkflowStartRequest,
 )
-from app.yunxiao import YunxiaoError, close_yunxiao_workitem, create_yunxiao_workitem
+from app.yunxiao import YunxiaoCloseSkipped, YunxiaoError, close_yunxiao_workitem, create_yunxiao_workitem
 
 
 class WorkflowError(RuntimeError):
@@ -448,6 +448,13 @@ def _advance_apifox_synced_to_yunxiao_closed(
     workflow_id = workflow["workflowId"]
     try:
         result = close_yunxiao_workitem(workflow, _clean_text(request.operator))
+    except YunxiaoCloseSkipped as exc:
+        return {
+            "workflow": workflow,
+            "advanced": False,
+            "reason": str(exc),
+            "nextAction": "add explicit Yunxiao task ids in commit message before closing",
+        }
     except YunxiaoError as exc:
         failed = db.mark_workflow_needs_human(
             workflow_id=workflow_id,

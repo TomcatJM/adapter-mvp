@@ -5,13 +5,14 @@
 ## 目录
 
 - `docs/`：使用手册、架构设计、部署配置、进度和任务文档
+- `templates/`：产品需求文档、AI 解析前置模版
 - `sql/`：数据库初始化或升级 SQL
 
 ## 推荐阅读顺序
 
 1. [文档索引](docs/文档索引.md)
 2. [使用手册](docs/使用手册.md)
-3. [部署与配置](docs/部署与配置.md)
-4. [架构设计](docs/架构设计.md)
-5. [初始化 SQL](sql/mysql_schema.sql)
-
+3. [钉钉需求文档标准模版](templates/钉钉需求文档标准模版.md)
+4. [部署与配置](docs/部署与配置.md)
+5. [架构设计](docs/架构设计.md)
+6. [初始化 SQL](sql/mysql_schema.sql)

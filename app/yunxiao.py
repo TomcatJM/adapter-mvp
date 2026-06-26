@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app import db
+from app.yunxiao_pipeline import _yunxiao_task_ids_from_commit_message
 from app.yunxiao_guard import (
     YunxiaoWorkflowGuardError,
     assert_yunxiao_close_plan_valid,
@@ -37,6 +38,11 @@ SECRET_KEYWORDS = ("token", "secret", "password", "passwd", "cookie", "authoriza
 
 class YunxiaoError(RuntimeError):
     """云效相关异常。"""
+    pass
+
+
+class YunxiaoCloseSkipped(YunxiaoError):
+    """云效关单被显式跳过。"""
     pass
 
 
@@ -137,16 +143,23 @@ def _request_create_workitem(payload: dict[str, Any], config: dict[str, Any]) ->
 
 def close_yunxiao_workitem(workflow: dict[str, Any], operator: str | None = None) -> dict[str, Any]:
     """关闭云效工作项。"""
-    workitem_ids = _workflow_close_workitem_ids(workflow)
+    explicit_refs = _workflow_explicit_close_references(workflow)
+    if not explicit_refs:
+        raise YunxiaoCloseSkipped(
+            "Yunxiao explicit close task ids missing: add commit message line like "
+            "'云效任务: AYRR-4062、 AYRR-4063'. No Yunxiao workitem will be closed."
+        )
+
+    workitem_ids = _workflow_close_workitem_ids(workflow, explicit_refs)
     if not workitem_ids:
-        if _workflow_has_requirement_tree(workflow):
+        if not _workflow_has_requirement_tree(workflow) and not _clean_text(workflow.get("yunxiaoTaskId")):
             raise YunxiaoError(
-                "Yunxiao child task ids missing: requirement-tree workflows can only close child tasks, "
-                "not the root requirement. Solution: ensure context.yunxiao.createResult.taskIdentifiers is recorded."
+                "Yunxiao task id missing: workflow.yunxiaoTaskId is required before closing. "
+                "Solution: create or bind the Yunxiao workitem first."
             )
-        raise YunxiaoError(
-            "Yunxiao task id missing: workflow.yunxiaoTaskId is required before closing. "
-            "Solution: create or bind the Yunxiao workitem first."
+        raise YunxiaoCloseSkipped(
+            "Yunxiao explicit close task ids did not match workflow child tasks: "
+            f"explicitTaskIds={', '.join(explicit_refs)}. No Yunxiao workitem will be closed."
         )
     try:
         assert_yunxiao_close_plan_valid(workflow)
@@ -233,7 +246,7 @@ def _snapshot_requirement_demand_statuses(workflow: dict[str, Any], config: dict
     snapshots: list[dict[str, Any]] = []
     if not _workflow_has_requirement_tree(workflow):
         return snapshots
-    task_ids = set(_workflow_close_workitem_ids(workflow))
+    task_ids = set(_workflow_close_workitem_ids(workflow, _workflow_explicit_close_references(workflow)))
     for demand_id in _workflow_requirement_demand_ids(workflow):
         if demand_id in task_ids:
             continue
@@ -286,27 +299,138 @@ def _restore_requirement_demand_statuses(
     return restored
 
 
-def _workflow_close_workitem_ids(workflow: dict[str, Any]) -> list[str]:
+def _workflow_close_workitem_ids(workflow: dict[str, Any], explicit_refs: list[str]) -> list[str]:
     """内部辅助函数：工作流关闭工作项ids。"""
+    if not explicit_refs:
+        return []
+    if _workflow_has_requirement_tree(workflow):
+        return _match_requirement_tree_task_ids(workflow, explicit_refs)
+
     context = workflow.get("context") if isinstance(workflow.get("context"), dict) else {}
     yunxiao = context.get("yunxiao") if isinstance(context.get("yunxiao"), dict) else {}
     create_result = yunxiao.get("createResult") if isinstance(yunxiao.get("createResult"), dict) else {}
-    candidate_lists = [
-        yunxiao.get("taskIds"),
-        create_result.get("taskIdentifiers"),
-        create_result.get("taskIds"),
-        create_result.get("closedTaskIds"),
+    workitem_id = _clean_text(workflow.get("yunxiaoTaskId") or create_result.get("workitemIdentifier"))
+    refs = _workflow_single_workitem_refs(workflow, create_result)
+    explicit = {_normalize_workitem_ref(ref) for ref in explicit_refs}
+    if workitem_id and explicit.intersection({_normalize_workitem_ref(ref) for ref in refs}):
+        return [workitem_id]
+    return []
+
+
+def _workflow_explicit_close_references(workflow: dict[str, Any]) -> list[str]:
+    """从流水线提交信息中提取显式允许关单的云效任务 ID。"""
+    context = workflow.get("context") if isinstance(workflow.get("context"), dict) else {}
+    messages = [
+        workflow.get("commitMessage"),
+        (context.get("pipeline") or {}).get("commitMessage") if isinstance(context.get("pipeline"), dict) else None,
+        (context.get("codingResult") or {}).get("commitMessage") if isinstance(context.get("codingResult"), dict) else None,
     ]
-    for candidate in candidate_lists:
-        if isinstance(candidate, list):
-            values = [_clean_text(item) for item in candidate]
-            ids = [value for value in values if value]
-            if ids:
-                return ids
-    if _workflow_has_requirement_tree(workflow):
-        return []
-    fallback = _clean_text(workflow.get("yunxiaoTaskId"))
-    return [fallback] if fallback else []
+    refs: list[str] = []
+    for message in messages:
+        refs.extend(_yunxiao_task_ids_from_commit_message(_clean_text(message) or ""))
+    return _unique_texts(refs)
+
+
+def _workflow_single_workitem_refs(workflow: dict[str, Any], create_result: dict[str, Any]) -> list[str]:
+    """提取单工作项 workflow 的可匹配 ID。"""
+    values = [
+        workflow.get("yunxiaoTaskId"),
+        workflow.get("yunxiaoTaskDisplayId"),
+        create_result.get("workitemIdentifier"),
+        create_result.get("workitemDisplayId"),
+        create_result.get("serialNumber"),
+        create_result.get("serialNo"),
+        create_result.get("yunxiaoTaskId"),
+        create_result.get("yunxiaoTaskDisplayId"),
+    ]
+    return _unique_texts(values)
+
+
+def _match_requirement_tree_task_ids(workflow: dict[str, Any], explicit_refs: list[str]) -> list[str]:
+    """把提交信息里的云效展示 ID 映射为需求树里的子任务内部 ID。"""
+    task_records = _workflow_requirement_task_reference_records(workflow)
+    matched_ids: list[str] = []
+    seen: set[str] = set()
+    for explicit_ref in explicit_refs:
+        normalized_ref = _normalize_workitem_ref(explicit_ref)
+        if not normalized_ref:
+            continue
+        for record in task_records:
+            workitem_id = record["workitemIdentifier"]
+            refs = {_normalize_workitem_ref(ref) for ref in record["refs"]}
+            if normalized_ref not in refs or workitem_id in seen:
+                continue
+            seen.add(workitem_id)
+            matched_ids.append(workitem_id)
+            break
+    return matched_ids
+
+
+def _workflow_requirement_task_reference_records(workflow: dict[str, Any]) -> list[dict[str, Any]]:
+    """提取需求树中任务工作项的内部 ID 和展示 ID。"""
+    context = workflow.get("context") if isinstance(workflow.get("context"), dict) else {}
+    yunxiao = context.get("yunxiao") if isinstance(context.get("yunxiao"), dict) else {}
+    create_result = yunxiao.get("createResult") if isinstance(yunxiao.get("createResult"), dict) else {}
+    records: dict[str, set[str]] = {}
+    for key in ("taskIdentifiers", "taskIds"):
+        values = create_result.get(key)
+        if isinstance(values, list):
+            for value in values:
+                workitem_id = _clean_text(value)
+                if workitem_id:
+                    records.setdefault(workitem_id, set()).add(workitem_id)
+    demands = create_result.get("demands")
+    if isinstance(demands, list):
+        for demand in demands:
+            if not isinstance(demand, dict):
+                continue
+            items = demand.get("items")
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                workitem_id = _clean_text(item.get("workitemIdentifier"))
+                if not workitem_id:
+                    continue
+                records.setdefault(workitem_id, set()).update(_task_reference_values(item))
+    return [
+        {"workitemIdentifier": workitem_id, "refs": _unique_texts(list(refs))}
+        for workitem_id, refs in records.items()
+    ]
+
+
+def _task_reference_values(item: dict[str, Any]) -> list[str]:
+    """提取一个云效任务节点上的所有可见引用。"""
+    return _unique_texts(
+        [
+            item.get("workitemIdentifier"),
+            item.get("workitemDisplayId"),
+            item.get("serialNumber"),
+            item.get("serialNo"),
+            item.get("yunxiaoTaskId"),
+            item.get("yunxiaoTaskDisplayId"),
+        ]
+    )
+
+
+def _normalize_workitem_ref(value: Any) -> str:
+    """归一化云效任务引用，便于展示 ID 大小写兼容。"""
+    text = _clean_text(value)
+    return text.upper() if text else ""
+
+
+def _unique_texts(values: list[Any]) -> list[str]:
+    """保序去重并清理空文本。"""
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = _clean_text(value)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
 
 
 def _workflow_requirement_demand_ids(workflow: dict[str, Any]) -> list[str]:

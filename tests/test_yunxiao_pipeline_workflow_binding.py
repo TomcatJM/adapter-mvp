@@ -398,6 +398,66 @@ class YunxiaoPipelineWorkflowBindingTest(unittest.TestCase):
         self.assertEqual(result["workflow"]["bindingSource"], "commit_message_yunxiao_task_id")
         self.assertEqual(result["workflow"]["workflow"]["workflowId"], "wf-test-1")
 
+    def test_success_binds_by_any_child_task_display_id_when_commit_lists_multiple_yunxiao_tasks(self) -> None:
+        from app.models import YunxiaoPipelineFailureCallback
+        from app.yunxiao_pipeline import handle_pipeline_success
+
+        workflow = {
+            "workflowId": "wf-test-1",
+            "yunxiaoTaskId": "REQ-ROOT",
+            "yunxiaoTaskDisplayId": "AYRR-4057",
+            "status": "CODING_REQUESTED",
+            "context": {
+                "yunxiao": {
+                    "createResult": {
+                        "workitemIdentifier": "REQ-ROOT",
+                        "workitemDisplayId": "AYRR-4057",
+                        "demands": [
+                            {
+                                "workitemIdentifier": "REQ-1",
+                                "workitemDisplayId": "AYRR-4057",
+                                "items": [
+                                    {
+                                        "workitemIdentifier": "TASK-1",
+                                        "workitemDisplayId": "AYRR-4063",
+                                    },
+                                    {
+                                        "workitemIdentifier": "TASK-2",
+                                        "serialNumber": "AYRR-4065",
+                                    },
+                                ],
+                            }
+                        ],
+                    }
+                }
+            },
+        }
+        pipeline_success = {**workflow, "status": "PIPELINE_SUCCESS", "context": {"pipeline": {}}}
+        apifox_result = {"enabled": False, "imported": False, "reason": "APIFOX_AUTO_IMPORT is not true"}
+        callback = YunxiaoPipelineFailureCallback(
+            taskId="yx-flow-pipe-1-88",
+            pipelineId="pipe-1",
+            buildNumber="88",
+            stageName="release",
+            commitMessage="feat: 验证链路\n\n云效任务: AYRR-4062、 AYRR-4063、 AYRR-4064",
+        )
+
+        with patch("app.yunxiao_pipeline.db.find_workflow_by_yunxiao_task_id", return_value=None) as find_task, patch(
+            "app.yunxiao_pipeline.db.list_workflows_by_statuses", return_value=[workflow]
+        ) as list_workflows, patch(
+            "app.yunxiao_pipeline.db.update_workflow_pipeline_success", return_value=pipeline_success
+        ), patch("app.yunxiao_pipeline.maybe_import_from_flow_event", return_value=apifox_result), patch(
+            "app.yunxiao_pipeline.db.record_workflow_apifox_result", return_value=pipeline_success
+        ):
+            result = handle_pipeline_success({}, callback)
+
+        self.assertEqual(find_task.call_count, 2)
+        self.assertEqual([call.args[0] for call in find_task.call_args_list], ["AYRR-4062", "AYRR-4063"])
+        self.assertEqual(list_workflows.call_count, 2)
+        self.assertTrue(result["workflow"]["bound"])
+        self.assertEqual(result["workflow"]["bindingSource"], "commit_message_yunxiao_task_id")
+        self.assertEqual(result["workflow"]["workflow"]["workflowId"], "wf-test-1")
+
     def test_success_binds_by_loose_chinese_yunxiao_key_in_commit_message(self) -> None:
         from app.models import YunxiaoPipelineFailureCallback
         from app.yunxiao_pipeline import handle_pipeline_success

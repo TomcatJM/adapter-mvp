@@ -80,6 +80,27 @@ COMMIT_YUNXIAO_TASK_PATTERNS = (
     re.compile(rf"(?i)(?:^|[\s,;，；])(?:{YUNXIAO_TASK_CHINESE_KEY_RE})\s*[:=：]\s*{IDENTIFIER_RE}\b"),
     re.compile(rf"(?:^|[\s,;，；])(?:{YUNXIAO_TASK_CHINESE_ALIAS_RE})\s*[:=：]\s*{IDENTIFIER_RE}\b"),
 )
+COMMIT_YUNXIAO_TASK_VALUE_PATTERNS = (
+    re.compile(rf"(?im)^\s*(?:{YUNXIAO_TASK_COMMIT_ALIAS_RE})\s*[:=：]\s*([^\r\n]+)"),
+    re.compile(rf"(?im)^\s*(?:{YUNXIAO_TASK_CHINESE_KEY_RE})\s*[:=：]\s*([^\r\n]+)"),
+    re.compile(rf"(?m)^\s*(?:{YUNXIAO_TASK_CHINESE_ALIAS_RE})\s*[:=：]\s*([^\r\n]+)"),
+    re.compile(rf"(?i)(?:^|[\s,;，；])(?:{YUNXIAO_TASK_COMMIT_ALIAS_RE})\s*[:=：]\s*([^\r\n]+)"),
+    re.compile(rf"(?i)(?:^|[\s,;，；])(?:{YUNXIAO_TASK_CHINESE_KEY_RE})\s*[:=：]\s*([^\r\n]+)"),
+    re.compile(rf"(?:^|[\s,;，；])(?:{YUNXIAO_TASK_CHINESE_ALIAS_RE})\s*[:=：]\s*([^\r\n]+)"),
+)
+YUNXIAO_REFERENCE_KEYS = {
+    "yunxiaoTaskId",
+    "yunxiaoTaskDisplayId",
+    "workitemIdentifier",
+    "workitemDisplayId",
+    "serialNumber",
+    "serialNo",
+    "taskIdentifiers",
+    "taskIds",
+    "taskDisplayIds",
+    "demandIdentifiers",
+    "demandDisplayIds",
+}
 
 
 def handle_pipeline_success(payload: dict[str, Any], callback: YunxiaoPipelineFailureCallback) -> dict[str, Any]:
@@ -369,20 +390,26 @@ def _find_workflow_for_callback(
             "reason": None if workflow else "workflow not found",
         }
 
-    commit_yunxiao_task_id = commit_binding.get("yunxiaoTaskId")
-    if commit_yunxiao_task_id:
-        attempts.append({"source": "commit_message_yunxiao_task_id", "value": commit_yunxiao_task_id})
-        workflow = _find_with_ambiguity_guard(
-            lambda: _find_workflow_by_yunxiao_reference(commit_yunxiao_task_id, project_binding_statuses),
-            "commit_message_yunxiao_task_id",
-            attempts,
-        )
-        if isinstance(workflow, dict) and workflow.get("reason") == "workflow match ambiguous":
-            return None, workflow
-        return workflow, {
+    commit_yunxiao_task_ids = commit_binding.get("yunxiaoTaskIds") or []
+    if commit_yunxiao_task_ids:
+        for commit_yunxiao_task_id in commit_yunxiao_task_ids:
+            attempts.append({"source": "commit_message_yunxiao_task_id", "value": commit_yunxiao_task_id})
+            workflow = _find_with_ambiguity_guard(
+                lambda value=commit_yunxiao_task_id: _find_workflow_by_yunxiao_reference(
+                    value,
+                    project_binding_statuses,
+                ),
+                "commit_message_yunxiao_task_id",
+                attempts,
+            )
+            if isinstance(workflow, dict) and workflow.get("reason") == "workflow match ambiguous":
+                return None, workflow
+            if workflow:
+                return workflow, {"source": "commit_message_yunxiao_task_id", "attempts": attempts}
+        return None, {
             "source": "commit_message_yunxiao_task_id",
             "attempts": attempts,
-            "reason": None if workflow else "workflow not found",
+            "reason": "workflow not found",
         }
 
     pipeline_id = _clean_text(callback.pipeline_id)
@@ -492,18 +519,8 @@ def _workflow_yunxiao_reference_candidates(workflow: dict[str, Any]) -> list[str
         yunxiao.get("closeResult") if isinstance(yunxiao.get("closeResult"), dict) else {},
         context.get("codingRequest") if isinstance(context.get("codingRequest"), dict) else {},
     ):
-        values.extend(
-            source.get(key)
-            for key in (
-                "yunxiaoTaskId",
-                "yunxiaoTaskDisplayId",
-                "workitemIdentifier",
-                "workitemDisplayId",
-                "serialNumber",
-                "serialNo",
-            )
-        )
-    return [text for text in (_clean_text(value) for value in values) if text]
+        values.extend(_collect_yunxiao_reference_values(source))
+    return _unique_texts(values)
 
 
 def _find_active_workflow_by_project(project_name: str, statuses: set[str]) -> dict[str, Any] | None:
@@ -614,7 +631,7 @@ def _pipeline_context(callback: YunxiaoPipelineFailureCallback) -> dict[str, Any
     }
 
 
-def _binding_ids_from_commit_message(message: str | None) -> dict[str, str]:
+def _binding_ids_from_commit_message(message: str | None) -> dict[str, Any]:
     """内部辅助函数：bindingids来自commit消息。"""
     text = _clean_text(message)
     if not text:
@@ -625,11 +642,59 @@ def _binding_ids_from_commit_message(message: str | None) -> dict[str, str]:
         if match:
             result["workflowId"] = match.group(1)
             break
-    for pattern in COMMIT_YUNXIAO_TASK_PATTERNS:
-        match = pattern.search(text)
-        if match:
-            result["yunxiaoTaskId"] = match.group(1)
-            break
+    yunxiao_task_ids = _yunxiao_task_ids_from_commit_message(text)
+    if yunxiao_task_ids:
+        result["yunxiaoTaskId"] = yunxiao_task_ids[0]
+        result["yunxiaoTaskIds"] = yunxiao_task_ids
+    return result
+
+
+def _yunxiao_task_ids_from_commit_message(text: str) -> list[str]:
+    """从提交信息中提取一个或多个云效任务引用。"""
+    values: list[str] = []
+    for pattern in COMMIT_YUNXIAO_TASK_VALUE_PATTERNS:
+        for match in pattern.finditer(text):
+            values.extend(_identifier_values(match.group(1)))
+    if not values:
+        for pattern in COMMIT_YUNXIAO_TASK_PATTERNS:
+            values.extend(match.group(1) for match in pattern.finditer(text))
+    return _unique_texts(values)
+
+
+def _identifier_values(value: Any) -> list[str]:
+    """从逗号、顿号或空格分隔的文本中提取标识符。"""
+    text = _clean_text(value)
+    if not text:
+        return []
+    return [match.group(1) for match in re.finditer(IDENTIFIER_RE, text)]
+
+
+def _collect_yunxiao_reference_values(value: Any) -> list[Any]:
+    """递归收集云效需求树里的工作项内部 ID 和展示 ID。"""
+    values: list[Any] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in YUNXIAO_REFERENCE_KEYS:
+                values.extend(item if isinstance(item, list) else [item])
+            if isinstance(item, (dict, list)):
+                values.extend(_collect_yunxiao_reference_values(item))
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, (dict, list)):
+                values.extend(_collect_yunxiao_reference_values(item))
+    return values
+
+
+def _unique_texts(values: list[Any]) -> list[str]:
+    """保序去重并清理空文本。"""
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = _clean_text(value)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
     return result
 
 

@@ -8,7 +8,8 @@ description: Enforce Adapter MVP workflow guardrails for DingTalk requirement do
 ## Workflow
 
 1. Read the current Adapter MVP code and tests before editing.
-2. Preserve this business model:
+2. Before parsing a DingTalk requirement document or creating Yunxiao workitems, align the document with `delivery/templates/钉钉需求文档标准模版.md`. If the product document has a new shape, document that shape first, then continue.
+3. Preserve this business model:
    - DingTalk document -> Yunxiao demand workitem (`category=Req`).
    - Every parsed task -> Yunxiao task workitem (`category=Task`).
    - Every task must carry the parent demand identifier (`parentIdentifier` in Adapter context, `parentId` for personal token API).
@@ -16,10 +17,11 @@ description: Enforce Adapter MVP workflow guardrails for DingTalk requirement do
    - `demandIndex` and `itemIndex` are ordering hints only; never infer or overwrite a demand title from indexes, document title, requirement key, the first demand, or another demand.
    - If the demand title or task ownership is ambiguous, fail explicitly or ask the user. Do not silently guess.
    - Document version maps to Yunxiao sprint; missing or ambiguous sprint must fail explicitly.
-   - Close/writeback closes child tasks only, never the root demand.
-3. Reject silent fallbacks for missing project, Apifox project, sprint, assignee, task type, token, or close status config.
-4. Keep commit parsing user-friendly: support Chinese labels such as `云效ID`、`云效任务`、`任务编号`, not only one English key.
-5. After changes, run focused tests first, then the full unit test suite and compile check.
+   - Close/writeback closes only child task IDs explicitly listed in the commit message `云效任务` field; never close the root demand.
+   - If the commit message has no explicit Yunxiao task IDs, skip close/writeback. Do not close all tasks by default.
+4. Reject silent fallbacks for missing project, Apifox project, sprint, assignee, task type, token, or close status config.
+5. Keep commit parsing user-friendly: support Chinese labels such as `云效ID`、`云效任务`、`任务编号`, not only one English key, and support multiple IDs such as `云效任务: AYRR-4062、 AYRR-4063`.
+6. After changes, run focused tests first, then the full unit test suite and compile check.
 
 ## Guard Commands
 
