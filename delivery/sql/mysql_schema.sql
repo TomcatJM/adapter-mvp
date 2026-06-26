@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS adapter_api_client (
     client_id VARCHAR(128) NOT NULL COMMENT '调用方ID，例如 codex、yunxiao-flow',
     client_name VARCHAR(128) NOT NULL COMMENT '调用方名称',
     token_hash CHAR(64) NOT NULL COMMENT 'API Token SHA-256哈希，禁止存明文',
+    token_ciphertext TEXT NULL COMMENT 'API Token加密备份，使用ADAPTER_API_TOKEN_ENCRYPTION_KEY加密',
+    token_last4 VARCHAR(16) NULL COMMENT 'API Token末尾4位，用于人工核对',
     scopes TEXT NULL COMMENT '权限范围，逗号分隔，例如 workflow:read,workflow:write',
     enabled TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否启用：1启用，0停用',
     expires_at TIMESTAMP NULL COMMENT '过期时间，空表示不过期',
