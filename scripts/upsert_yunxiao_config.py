@@ -363,14 +363,6 @@ def main() -> None:
                         """,
                         (project_config_id, args.project_name),
                     )
-                    cursor.execute(
-                        """
-                        UPDATE adapter_yunxiao_project_member
-                        SET is_default = 0
-                        WHERE LOWER(project_name) = LOWER(%s)
-                        """,
-                        (args.project_name,),
-                    )
                 if not args.person_only:
                     cursor.execute(
                         """
@@ -396,32 +388,6 @@ def main() -> None:
                             project_config_id,
                             args.member_account_id,
                             member_id,
-                            1 if args.member_default else 0,
-                            args.remark or None,
-                        ),
-                    )
-                    cursor.execute(
-                        """
-                        INSERT INTO adapter_yunxiao_project_member (
-                            project_name,
-                            member_name,
-                            yunxiao_account_id,
-                            is_default,
-                            enabled,
-                            remark
-                        )
-                        VALUES (%s, %s, %s, %s, 1, %s)
-                        ON DUPLICATE KEY UPDATE
-                            member_name = VALUES(member_name),
-                            yunxiao_account_id = VALUES(yunxiao_account_id),
-                            is_default = VALUES(is_default),
-                            enabled = 1,
-                            remark = VALUES(remark)
-                        """,
-                        (
-                            args.project_name,
-                            args.member_name,
-                            args.member_account_id,
                             1 if args.member_default else 0,
                             args.remark or None,
                         ),

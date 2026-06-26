@@ -158,22 +158,6 @@ CREATE TABLE IF NOT EXISTS adapter_yunxiao_project_member_relation (
     KEY idx_adapter_yunxiao_project_member_relation_account (yunxiao_account_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter云效项目人员关联表';
 
-CREATE TABLE IF NOT EXISTS adapter_yunxiao_project_member (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
-    project_name VARCHAR(128) NOT NULL COMMENT '业务项目名称，例如 jdb-school-crm',
-    member_name VARCHAR(128) NOT NULL COMMENT '负责人姓名，例如 姬志猛',
-    yunxiao_account_id VARCHAR(128) NOT NULL COMMENT '云效账号ID',
-    is_default TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否默认负责人：1是，0否',
-    enabled TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否启用：1启用，0停用',
-    remark VARCHAR(512) NULL COMMENT '备注',
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-        ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-    UNIQUE KEY uk_adapter_yunxiao_project_member_name (project_name, member_name),
-    UNIQUE KEY uk_adapter_yunxiao_project_member_account (project_name, yunxiao_account_id),
-    KEY idx_adapter_yunxiao_project_member_default (project_name, is_default, enabled)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter云效项目人员配置表';
-
 CREATE TABLE IF NOT EXISTS adapter_dingtalk_app_config (
     id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
     config_name VARCHAR(128) NOT NULL COMMENT '配置名称，例如 default',
