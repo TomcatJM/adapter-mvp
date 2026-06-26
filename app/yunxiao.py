@@ -13,6 +13,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app import db
+from app.yunxiao_guard import (
+    YunxiaoWorkflowGuardError,
+    assert_yunxiao_close_plan_valid,
+    assert_yunxiao_create_result_valid,
+)
 
 
 DEFAULT_ENDPOINT = "devops.cn-hangzhou.aliyuncs.com"
@@ -55,7 +60,7 @@ def create_yunxiao_workitem(
     """创建云效工作项。"""
     config = _load_config(workflow, purpose="create")
     if _requirement_has_demands(workflow):
-        return _create_yunxiao_requirement_tree(
+        result = _create_yunxiao_requirement_tree(
             workflow,
             config,
             operator,
@@ -64,6 +69,11 @@ def create_yunxiao_workitem(
             parent_identifier=parent_identifier,
             requested_assignee=requested_assignee,
         )
+        try:
+            assert_yunxiao_create_result_valid(workflow, result)
+        except YunxiaoWorkflowGuardError as exc:
+            raise YunxiaoError(str(exc)) from exc
+        return result
     payload = build_create_workitem_payload(
         workflow,
         config,
@@ -129,10 +139,19 @@ def close_yunxiao_workitem(workflow: dict[str, Any], operator: str | None = None
     """关闭云效工作项。"""
     workitem_ids = _workflow_close_workitem_ids(workflow)
     if not workitem_ids:
+        if _workflow_has_requirement_tree(workflow):
+            raise YunxiaoError(
+                "Yunxiao child task ids missing: requirement-tree workflows can only close child tasks, "
+                "not the root requirement. Solution: ensure context.yunxiao.createResult.taskIdentifiers is recorded."
+            )
         raise YunxiaoError(
             "Yunxiao task id missing: workflow.yunxiaoTaskId is required before closing. "
             "Solution: create or bind the Yunxiao workitem first."
         )
+    try:
+        assert_yunxiao_close_plan_valid(workflow)
+    except YunxiaoWorkflowGuardError as exc:
+        raise YunxiaoError(str(exc)) from exc
 
     config = _load_config(workflow, purpose="close")
     if config.get("authType") == "legacy_token":
@@ -142,6 +161,7 @@ def close_yunxiao_workitem(workflow: dict[str, Any], operator: str | None = None
             f"Solution: configure adapter_yunxiao_account_config accountName={config.get('accountName') or ''} "
             "with auth_type=acs_ak, access_key_id, access_key_secret, and endpoint=devops.cn-hangzhou.aliyuncs.com."
         )
+    demand_status_snapshots = _snapshot_requirement_demand_statuses(workflow, config)
     closed_results: list[dict[str, Any]] = []
     skipped_results: list[dict[str, Any]] = []
     for workitem_id in workitem_ids:
@@ -186,6 +206,7 @@ def close_yunxiao_workitem(workflow: dict[str, Any], operator: str | None = None
                 "close": _safe_response(close_response),
             }
         )
+    restored_demands = _restore_requirement_demand_statuses(demand_status_snapshots, config)
     all_results = closed_results + skipped_results
     primary_result = all_results[0] if all_results else {"workitemIdentifier": workitem_ids[0], "alreadyClosed": True}
     return {
@@ -199,10 +220,70 @@ def close_yunxiao_workitem(workflow: dict[str, Any], operator: str | None = None
         "close": closed_results[0]["close"] if closed_results else None,
         "closedTaskIds": [item["workitemIdentifier"] for item in closed_results],
         "skippedTaskIds": [item["workitemIdentifier"] for item in skipped_results],
+        "restoredDemandIds": [item["workitemIdentifier"] for item in restored_demands],
+        "restoredDemands": restored_demands,
         "results": all_results,
         "configSource": config.get("configSource"),
         "authType": config.get("authType"),
     }
+
+
+def _snapshot_requirement_demand_statuses(workflow: dict[str, Any], config: dict[str, Any]) -> list[dict[str, Any]]:
+    """记录需求树父需求状态，避免关闭子任务后被云效联动关需求。"""
+    snapshots: list[dict[str, Any]] = []
+    if not _workflow_has_requirement_tree(workflow):
+        return snapshots
+    task_ids = set(_workflow_close_workitem_ids(workflow))
+    for demand_id in _workflow_requirement_demand_ids(workflow):
+        if demand_id in task_ids:
+            continue
+        current = get_yunxiao_workitem(demand_id, config)
+        snapshots.append(
+            {
+                "workitemIdentifier": demand_id,
+                "workitemDisplayId": _extract_workitem_display_id(current) or demand_id,
+                "status": _extract_status_identifier(current),
+                "statusName": _extract_status_name(current),
+                "alreadyClosed": _is_workitem_closed(current, config),
+            }
+        )
+    return snapshots
+
+
+def _restore_requirement_demand_statuses(
+    snapshots: list[dict[str, Any]], config: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """恢复被云效父子联动自动完成的父需求状态。"""
+    restored: list[dict[str, Any]] = []
+    for snapshot in snapshots:
+        original_status = _clean_text(snapshot.get("status"))
+        demand_id = _clean_text(snapshot.get("workitemIdentifier"))
+        if not demand_id or not original_status or snapshot.get("alreadyClosed"):
+            continue
+        current = get_yunxiao_workitem(demand_id, config)
+        current_status = _extract_status_identifier(current)
+        if current_status == original_status or not _is_workitem_closed(current, config):
+            continue
+        restore_response = update_yunxiao_workitem_status(demand_id, original_status, config)
+        after = get_yunxiao_workitem(demand_id, config)
+        restored_status = _extract_status_identifier(after)
+        if restored_status != original_status:
+            raise YunxiaoError(
+                "Yunxiao requirement demand restore failed: "
+                f"workitem={demand_id} currentStatus={restored_status or _extract_status_name(after) or 'unknown'} "
+                f"expectedStatus={original_status}"
+            )
+        restored.append(
+            {
+                "workitemIdentifier": demand_id,
+                "workitemDisplayId": _extract_workitem_display_id(after) or snapshot.get("workitemDisplayId"),
+                "fromStatus": current_status,
+                "toStatus": restored_status,
+                "toStatusName": _extract_status_name(after),
+                "restore": _safe_response(restore_response),
+            }
+        )
+    return restored
 
 
 def _workflow_close_workitem_ids(workflow: dict[str, Any]) -> list[str]:
@@ -222,8 +303,37 @@ def _workflow_close_workitem_ids(workflow: dict[str, Any]) -> list[str]:
             ids = [value for value in values if value]
             if ids:
                 return ids
+    if _workflow_has_requirement_tree(workflow):
+        return []
     fallback = _clean_text(workflow.get("yunxiaoTaskId"))
     return [fallback] if fallback else []
+
+
+def _workflow_requirement_demand_ids(workflow: dict[str, Any]) -> list[str]:
+    """提取需求树父需求 ID。"""
+    context = workflow.get("context") if isinstance(workflow.get("context"), dict) else {}
+    yunxiao = context.get("yunxiao") if isinstance(context.get("yunxiao"), dict) else {}
+    create_result = yunxiao.get("createResult") if isinstance(yunxiao.get("createResult"), dict) else {}
+    demands = create_result.get("demands")
+    if not isinstance(demands, list):
+        return []
+    ids: list[str] = []
+    for demand in demands:
+        if not isinstance(demand, dict):
+            continue
+        demand_id = _clean_text(demand.get("workitemIdentifier"))
+        if demand_id:
+            ids.append(demand_id)
+    return ids
+
+
+def _workflow_has_requirement_tree(workflow: dict[str, Any]) -> bool:
+    """判断 workflow 是否为需求树创建结果。"""
+    context = workflow.get("context") if isinstance(workflow.get("context"), dict) else {}
+    yunxiao = context.get("yunxiao") if isinstance(context.get("yunxiao"), dict) else {}
+    create_result = yunxiao.get("createResult") if isinstance(yunxiao.get("createResult"), dict) else {}
+    demands = create_result.get("demands")
+    return bool(create_result.get("demandCount") or (isinstance(demands, list) and demands))
 
 
 def get_yunxiao_workitem(workitem_id: str, config: dict[str, Any]) -> Any:
@@ -300,40 +410,53 @@ def add_yunxiao_workitem_comment(workitem_id: str, content: str, config: dict[st
 
 def update_yunxiao_workitem_done_status(workitem_id: str, config: dict[str, Any]) -> Any:
     """更新云效工作项done状态。"""
-    organization_id = urllib.parse.quote(config["organizationId"], safe="")
-    if config.get("authType") == "personal_token":
-        if not config.get("doneStatusId"):
-            raise YunxiaoError(
-                "Yunxiao personal_token close config missing: done_status_id. "
-                "UpdateWorkitem with personal token closes by status id, not close_transition_id."
-            )
-        response = _request_yunxiao_personal_token_rest(
+    if config.get("authType") != "personal_token" and config.get("closeTransitionId"):
+        organization_id = urllib.parse.quote(config["organizationId"], safe="")
+        response = _request_yunxiao_openapi(
             method="PUT",
-            path=_personal_token_workitem_path(config, urllib.parse.quote(workitem_id, safe="")),
-            payload={"status": config["doneStatusId"]},
+            path=f"/organization/{organization_id}/workitems/update",
+            action=UPDATE_WORKITEM_ACTION,
+            payload={
+                "identifier": workitem_id,
+                "transitionIdentifier": config["closeTransitionId"],
+            },
             config=config,
             timeout=config["timeout"],
         )
         _require_api_success(response, "Yunxiao close workitem")
         return response
+    done_status_id = config.get("doneStatusId")
+    if not done_status_id:
+        raise YunxiaoError("Yunxiao close config missing: done_status_id")
+    return update_yunxiao_workitem_status(workitem_id, done_status_id, config)
 
-    if config.get("closeTransitionId"):
-        path = f"/organization/{organization_id}/workitems/update"
-        payload = {
-            "identifier": workitem_id,
-            "transitionIdentifier": config["closeTransitionId"],
-        }
-        action = UPDATE_WORKITEM_ACTION
-    else:
-        field_type = config.get("doneStatusFieldId") or DEFAULT_DONE_STATUS_FIELD_ID
-        path = f"/organization/{organization_id}/workitems/update"
-        payload = {
-            "identifier": workitem_id,
-            "propertyKey": field_type,
-            "propertyValue": config["doneStatusId"],
-            "fieldType": field_type,
-        }
-        action = UPDATE_WORKITEM_ACTION
+
+def update_yunxiao_workitem_status(workitem_id: str, status_id: str, config: dict[str, Any]) -> Any:
+    """更新云效工作项状态。"""
+    organization_id = urllib.parse.quote(config["organizationId"], safe="")
+    status_id = _clean_text(status_id)
+    if not status_id:
+        raise YunxiaoError("Yunxiao status id is required")
+    if config.get("authType") == "personal_token":
+        response = _request_yunxiao_personal_token_rest(
+            method="PUT",
+            path=_personal_token_workitem_path(config, urllib.parse.quote(workitem_id, safe="")),
+            payload={"status": status_id},
+            config=config,
+            timeout=config["timeout"],
+        )
+        _require_api_success(response, "Yunxiao update workitem status")
+        return response
+
+    field_type = config.get("doneStatusFieldId") or DEFAULT_DONE_STATUS_FIELD_ID
+    path = f"/organization/{organization_id}/workitems/update"
+    payload = {
+        "identifier": workitem_id,
+        "propertyKey": field_type,
+        "propertyValue": status_id,
+        "fieldType": field_type,
+    }
+    action = UPDATE_WORKITEM_ACTION
 
     if config.get("authType") == "legacy_token":
         response = _request_yunxiao_legacy_rest(
@@ -350,9 +473,9 @@ def update_yunxiao_workitem_done_status(workitem_id: str, config: dict[str, Any]
             action=action,
             payload=payload,
             config=config,
-            timeout=config["timeout"],
-        )
-    _require_api_success(response, "Yunxiao close workitem")
+        timeout=config["timeout"],
+    )
+    _require_api_success(response, "Yunxiao update workitem status")
     return response
 
 
@@ -1331,11 +1454,12 @@ def _create_yunxiao_requirement_tree(
         _require_task_workitem_config(config)
     try:
         for demand in demands:
-            demand_title = _clean_text(demand.get("title")) or _clean_text(requirement.get("documentTitle")) or _clean_text(
-                workflow.get("requirementKey")
-            )
+            demand_title = _clean_text(demand.get("title"))
             if not demand_title:
-                raise YunxiaoError("Requirement demand title is required before creating Yunxiao workitems")
+                raise YunxiaoError(
+                    "Requirement demand title is required before creating Yunxiao workitems. "
+                    "Do not infer it from documentTitle, requirementKey, or another demand."
+                )
             demand_description = _build_requirement_demand_description(workflow, requirement, demand, operator)
             demand_result = _create_yunxiao_single_workitem(
                 workflow,
@@ -1381,7 +1505,7 @@ def _create_yunxiao_requirement_tree(
                         "itemIndex": item.get("itemIndex"),
                         "title": item_title,
                         "parentDemandIndex": item.get("parentDemandIndex"),
-                        "parentDemandTitle": _clean_text(item.get("parentDemandTitle")) or demand_title,
+                        "parentDemandTitle": demand_title,
                         "ownerName": _clean_text(item.get("ownerName")),
                         "contentLines": [str(line) for line in item.get("contentLines") or [] if str(line).strip()],
                         "workitemIdentifier": item_result["workitemIdentifier"],
@@ -1515,7 +1639,7 @@ def _build_requirement_demand_description(
         f"操作人：{operator or ''}",
         "",
         "需求摘要：",
-        str(requirement.get("summary") or ""),
+        _clean_text(demand.get("title")) or "",
         "",
         "任务清单：",
         _format_requirement_task_list(demand.get("items")),
@@ -1548,7 +1672,7 @@ def _build_requirement_task_description(
         _format_task_content_lines(item.get("contentLines")),
         "",
         "需求摘要：",
-        str(requirement.get("summary") or ""),
+        _clean_text(demand.get("title")) or "",
     ]
     return _clip(_sanitize("\n".join(lines)), 12000)
 

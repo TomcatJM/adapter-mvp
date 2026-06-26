@@ -302,7 +302,7 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
                             "itemIndex": 1,
                             "title": "任务一",
                             "parentDemandIndex": 1,
-                            "parentDemandTitle": "需求一",
+                            "parentDemandTitle": "旧解析值",
                             "ownerName": "姬志猛",
                             "contentLines": ["创建一条学生信息", "姓名必填", "手机号必填"],
                         }
@@ -343,6 +343,7 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
         self.assertEqual(result["taskIdentifiers"], ["TASK-1"])
         self.assertEqual(result["demands"][0]["workitemIdentifier"], "REQ-ROOT")
         self.assertEqual(result["demands"][0]["items"][0]["workitemIdentifier"], "TASK-1")
+        self.assertEqual(result["demands"][0]["items"][0]["parentDemandTitle"], "需求一")
         self.assertEqual([item["payload"]["subject"] for item in captured], ["需求一", "任务一"])
         self.assertEqual(captured[0]["payload"]["category"], "Req")
         self.assertEqual(captured[0]["payload"]["workitemTypeIdentifier"], "type-req")
@@ -376,6 +377,73 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
                 create_yunxiao_workitem(workflow, "codex")
 
         self.assertIn("Yunxiao task workitem type is missing", str(raised.exception))
+
+    def test_task_description_uses_current_demand_as_summary(self) -> None:
+        from app.yunxiao import _build_requirement_task_description
+
+        workflow = _workflow()
+        requirement = {
+            "summary": "需求一",
+        }
+        demand = {
+            "title": "需求二",
+            "description": "222222222222",
+        }
+        item = {
+            "title": "创建跟进记录二",
+            "ownerName": "",
+            "contentLines": ["新建跟进记录22222", "类型、内容必填2222"],
+        }
+
+        description = _build_requirement_task_description(workflow, requirement, demand, item, "codex")
+
+        self.assertIn("所属需求：需求二", description)
+        self.assertIn("需求摘要：\n需求二", description)
+        self.assertNotIn("需求摘要：\n需求一", description)
+
+    def test_demand_description_uses_current_demand_as_summary(self) -> None:
+        from app.yunxiao import _build_requirement_demand_description
+
+        workflow = _workflow()
+        requirement = {
+            "summary": "需求一",
+        }
+        demand = {
+            "title": "需求二",
+            "description": "222222222222",
+            "items": [{"title": "任务二"}],
+        }
+
+        description = _build_requirement_demand_description(workflow, requirement, demand, "codex")
+
+        self.assertIn("需求标题：需求二", description)
+        self.assertIn("需求摘要：\n需求二", description)
+        self.assertNotIn("需求摘要：\n需求一", description)
+
+    def test_create_workitem_tree_requires_explicit_demand_title(self) -> None:
+        from app.yunxiao import YunxiaoError, create_yunxiao_workitem
+
+        workflow = _workflow()
+        workflow["requirementKey"] = "REQ-FALLBACK"
+        workflow["context"]["requirement"] = {
+            "summary": "需求一",
+            "documentTitle": "文档标题不能当需求标题",
+            "demands": [
+                {
+                    "demandIndex": 1,
+                    "description": "描述：1111111",
+                    "items": [],
+                }
+            ],
+        }
+
+        with patch.dict(os.environ, ENV, clear=True), patch("app.yunxiao._request_yunxiao_openapi") as request_mock:
+            with self.assertRaises(YunxiaoError) as raised:
+                create_yunxiao_workitem(workflow, "codex")
+
+        self.assertIn("Requirement demand title is required", str(raised.exception))
+        self.assertIn("Do not infer it from documentTitle", str(raised.exception))
+        request_mock.assert_not_called()
 
     def test_create_workitem_tree_missing_requested_owner_fails_explicitly(self) -> None:
         from app.yunxiao import YunxiaoError, create_yunxiao_workitem

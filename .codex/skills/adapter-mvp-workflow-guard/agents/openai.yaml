@@ -1,0 +1,4 @@
+interface:
+  display_name: "Adapter MVP 工作流守卫"
+  short_description: "校验 Adapter MVP 钉钉到云效到流水线闭环"
+  default_prompt: "按 Adapter MVP 工作流守卫规则处理本次钉钉、云效、流水线或 Apifox 闭环任务。"

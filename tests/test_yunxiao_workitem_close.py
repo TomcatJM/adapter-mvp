@@ -160,6 +160,77 @@ class YunxiaoWorkitemCloseTest(unittest.TestCase):
         self.assertNotIn("REQ-ROOT-DISPLAY", comment_payloads[0])
         self.assertNotIn("REQ-ROOT-DISPLAY", comment_payloads[1])
 
+    def test_close_workitem_tree_restores_parent_demands_after_yunxiao_cascade(self) -> None:
+        from app.yunxiao import close_yunxiao_workitem
+
+        captured: list[dict] = []
+        lookup_counts: dict[str, int] = {}
+
+        def fake_request(**kwargs):
+            captured.append(kwargs)
+            action = kwargs["action"]
+            if action == "GetWorkItemInfo":
+                workitem_id = kwargs["path"].rsplit("/", 1)[-1]
+                lookup_counts[workitem_id] = lookup_counts.get(workitem_id, 0) + 1
+                count = lookup_counts[workitem_id]
+                if workitem_id in {"REQ-1", "REQ-2"}:
+                    status = "new" if count in {1, 3} else "done"
+                    return {"success": True, "data": {"identifier": workitem_id, "serialNumber": f"{workitem_id}-DISPLAY", "statusIdentifier": status}}
+                if workitem_id in {"TASK-1", "TASK-2"}:
+                    status = "doing" if count == 1 else "done"
+                    return {"success": True, "data": {"identifier": workitem_id, "serialNumber": f"{workitem_id}-DISPLAY", "statusIdentifier": status}}
+                raise AssertionError(f"unexpected lookup path: {kwargs['path']}")
+            return {"success": True, "requestId": f"req-{len(captured)}"}
+
+        workflow = {
+            **_workflow(),
+            "workflowId": "wf-close-tree-cascade",
+            "yunxiaoTaskId": "REQ-1",
+            "context": {
+                **_workflow()["context"],
+                "yunxiao": {
+                    "createResult": {
+                        "workitemIdentifier": "REQ-1",
+                        "workitemDisplayId": "REQ-1-DISPLAY",
+                        "demandCount": 2,
+                        "taskCount": 2,
+                        "taskIdentifiers": ["TASK-1", "TASK-2"],
+                        "demands": [
+                            {
+                                "workitemIdentifier": "REQ-1",
+                                "workitemDisplayId": "REQ-1-DISPLAY",
+                                "category": "Req",
+                                "items": [{"workitemIdentifier": "TASK-1", "category": "Task", "parentIdentifier": "REQ-1"}],
+                            },
+                            {
+                                "workitemIdentifier": "REQ-2",
+                                "workitemDisplayId": "REQ-2-DISPLAY",
+                                "category": "Req",
+                                "items": [{"workitemIdentifier": "TASK-2", "category": "Task", "parentIdentifier": "REQ-2"}],
+                            },
+                        ],
+                    }
+                },
+            },
+        }
+
+        with patch.dict(os.environ, ENV, clear=True), patch(
+            "app.yunxiao._request_yunxiao_openapi", side_effect=fake_request
+        ):
+            result = close_yunxiao_workitem(workflow, "codex")
+
+        self.assertEqual(result["closedTaskIds"], ["TASK-1", "TASK-2"])
+        self.assertEqual(result["restoredDemandIds"], ["REQ-1", "REQ-2"])
+        update_payloads = [item["payload"] for item in captured if item["action"] == "UpdateWorkItem"]
+        self.assertEqual(
+            [(payload["identifier"], payload["propertyValue"]) for payload in update_payloads],
+            [("TASK-1", "done"), ("TASK-2", "done"), ("REQ-1", "new"), ("REQ-2", "new")],
+        )
+        comment_payloads = [item["payload"]["content"] for item in captured if item["action"] == "CreateWorkitemComment"]
+        self.assertEqual(len(comment_payloads), 2)
+        self.assertNotIn("REQ-1-DISPLAY", comment_payloads[0])
+        self.assertNotIn("REQ-2-DISPLAY", comment_payloads[1])
+
     def test_close_workitem_missing_task_id_fails_explicitly(self) -> None:
         from app.yunxiao import YunxiaoError, close_yunxiao_workitem
 
@@ -171,6 +242,80 @@ class YunxiaoWorkitemCloseTest(unittest.TestCase):
 
         self.assertIn("Yunxiao task id missing", str(raised.exception))
         self.assertIn("create or bind", str(raised.exception))
+
+    def test_close_workitem_tree_without_child_task_ids_fails_before_root_close(self) -> None:
+        from app.yunxiao import YunxiaoError, close_yunxiao_workitem
+
+        workflow = {
+            **_workflow(),
+            "yunxiaoTaskId": "REQ-ROOT",
+            "context": {
+                **_workflow()["context"],
+                "yunxiao": {
+                    "createResult": {
+                        "workitemIdentifier": "REQ-ROOT",
+                        "category": "Req",
+                        "demandCount": 1,
+                        "taskCount": 1,
+                        "demands": [
+                            {
+                                "workitemIdentifier": "REQ-ROOT",
+                                "category": "Req",
+                                "items": [],
+                            }
+                        ],
+                        "taskIdentifiers": [],
+                    }
+                },
+            },
+        }
+
+        with patch.dict(os.environ, ENV, clear=True), patch("app.yunxiao.get_yunxiao_workitem") as get_workitem:
+            with self.assertRaises(YunxiaoError) as raised:
+                close_yunxiao_workitem(workflow, "codex")
+
+        get_workitem.assert_not_called()
+        self.assertIn("can only close child tasks", str(raised.exception))
+
+    def test_close_workitem_tree_rejects_root_requirement_in_task_ids(self) -> None:
+        from app.yunxiao import YunxiaoError, close_yunxiao_workitem
+
+        workflow = {
+            **_workflow(),
+            "yunxiaoTaskId": "REQ-ROOT",
+            "context": {
+                **_workflow()["context"],
+                "yunxiao": {
+                    "createResult": {
+                        "workitemIdentifier": "REQ-ROOT",
+                        "category": "Req",
+                        "demandCount": 1,
+                        "taskCount": 1,
+                        "demands": [
+                            {
+                                "workitemIdentifier": "REQ-ROOT",
+                                "category": "Req",
+                                "items": [
+                                    {
+                                        "workitemIdentifier": "REQ-ROOT",
+                                        "category": "Task",
+                                        "parentIdentifier": "REQ-ROOT",
+                                    }
+                                ],
+                            }
+                        ],
+                        "taskIdentifiers": ["REQ-ROOT"],
+                    }
+                },
+            },
+        }
+
+        with patch.dict(os.environ, ENV, clear=True), patch("app.yunxiao.get_yunxiao_workitem") as get_workitem:
+            with self.assertRaises(YunxiaoError) as raised:
+                close_yunxiao_workitem(workflow, "codex")
+
+        get_workitem.assert_not_called()
+        self.assertIn("must not include root requirement id", str(raised.exception))
 
     def test_close_workitem_missing_done_status_fails_explicitly(self) -> None:
         from app.yunxiao import YunxiaoError, close_yunxiao_workitem

@@ -1,0 +1,32 @@
+<!-- ADAPTER-MVP-GUARD:START -->
+# Adapter MVP Execution Rules
+
+本项目处理钉钉需求文档、云效工作项、流水线回调和 Apifox 同步时，必须先遵守这些规则。
+
+## 强制业务模型
+
+- 云效“需求”和“任务”是两类工作项，不能混用。
+- 钉钉需求文档解析后，先创建云效需求，再在对应需求下创建云效任务。
+- 云效任务必须挂到父需求下：personal token 链路使用 `parentId`，Adapter context 使用 `parentIdentifier` 留痕。
+- 需求标题是作用域边界：某个需求标题下面的描述、负责人、主要内容和任务，只能归属当前需求。
+- `demandIndex` / `itemIndex` 只表示顺序，不能用来推断、借用或覆盖需求标题。
+- 需求标题缺失或归属不明确时必须失败或请用户确认，不能从文档标题、需求键、第一条需求或其他需求静默推断。
+- 钉钉文档里的版本号必须映射到云效迭代；匹配不到唯一迭代时必须失败，不允许静默置空。
+- 关单只关闭任务，不关闭需求；需求树 workflow 如果没有任务 ID，必须失败。
+- webhook 解析提交信息时，不能只识别固定英文键；应兼容 `云效ID`、`云效任务`、`任务编号`、`yunxiaoTaskDisplayId` 等用户可见写法。
+
+## 修改代码前后要求
+
+- 修改前先确认当前测试覆盖点，优先补回归测试再改实现。
+- 修改云效创建、关单、流水线绑定、Apifox 同步相关逻辑后，必须运行对应单测和 `compileall`。
+- 不允许打印 token、AK、密码、Authorization、cookie 或私钥。
+- 不允许用静默默认项目、默认 Apifox 项目、空迭代、空负责人掩盖配置缺失。
+
+## 推荐校验命令
+
+```bash
+.venv/bin/python -m unittest discover -s tests -p 'test_*.py'
+.venv/bin/python -m compileall app scripts
+.venv/bin/python scripts/validate_yunxiao_workflow_guard.py --file <workflow.json> --mode all
+```
+<!-- ADAPTER-MVP-GUARD:END -->
