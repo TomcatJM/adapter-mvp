@@ -70,6 +70,8 @@ class YunxiaoDbConfigTest(unittest.TestCase):
             "sprint_id": "sprint-1",
             "workitem_category": "Req",
             "workitem_type_identifier": "type-req",
+            "task_workitem_category": "Task",
+            "task_workitem_type_identifier": "type-task",
             "default_assignee": "user-1",
             "priority_field_id": "priority",
             "priority_default_value": "P2",
@@ -98,6 +100,8 @@ class YunxiaoDbConfigTest(unittest.TestCase):
         self.assertEqual(result["projectId"], "project-1")
         self.assertEqual(result["sprintId"], "sprint-1")
         self.assertEqual(result["workitemTypeIdentifier"], "type-req")
+        self.assertEqual(result["taskCategory"], "Task")
+        self.assertEqual(result["taskWorkitemTypeIdentifier"], "type-task")
         self.assertEqual(result["assignee"], "user-1")
         self.assertEqual(result["doneStatusId"], "done")
         self.assertEqual(result["doneStatusFieldId"], "status")

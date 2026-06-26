@@ -727,6 +727,10 @@ def _load_db_config(project_name: str | None, workflow: dict[str, Any], *, purpo
         "sprintId": project_config.get("sprintId"),
         "category": project_config.get("category") or "Req",
         "workitemTypeIdentifier": project_config.get("workitemTypeIdentifier"),
+        "requirementCategory": project_config.get("category") or "Req",
+        "requirementWorkitemTypeIdentifier": project_config.get("workitemTypeIdentifier"),
+        "taskCategory": project_config.get("taskCategory") or "Task",
+        "taskWorkitemTypeIdentifier": project_config.get("taskWorkitemTypeIdentifier"),
         "assignee": assignee.get("accountId"),
         "assigneeName": assignee.get("name"),
         "assigneeSource": assignee.get("source"),
@@ -768,6 +772,16 @@ def _load_env_config(project_name: str | None, *, purpose: str) -> dict[str, Any
         "workitemTypeIdentifier": _first_env(
             "YUNXIAO_WORKITEM_TYPE_IDENTIFIER",
             "YUNXIAO_WORKITEM_TYPE_ID",
+        ),
+        "requirementCategory": _first_env("YUNXIAO_WORKITEM_CATEGORY") or "Req",
+        "requirementWorkitemTypeIdentifier": _first_env(
+            "YUNXIAO_WORKITEM_TYPE_IDENTIFIER",
+            "YUNXIAO_WORKITEM_TYPE_ID",
+        ),
+        "taskCategory": _first_env("YUNXIAO_TASK_WORKITEM_CATEGORY") or "Task",
+        "taskWorkitemTypeIdentifier": _first_env(
+            "YUNXIAO_TASK_WORKITEM_TYPE_IDENTIFIER",
+            "YUNXIAO_TASK_WORKITEM_TYPE_ID",
         ),
         "assignee": _first_env("YUNXIAO_WORKITEM_ASSIGNEE", "YUNXIAO_ASSIGNED_TO"),
         "assigneeName": _first_env("YUNXIAO_WORKITEM_ASSIGNEE_NAME"),
@@ -834,6 +848,36 @@ def _env_required(config: dict[str, Any], purpose: str) -> dict[str, Any]:
         required["YUNXIAO_WORKITEM_TYPE_IDENTIFIER"] = config["workitemTypeIdentifier"]
         required["YUNXIAO_WORKITEM_ASSIGNEE"] = config["assignee"]
     return required
+
+
+def _config_for_workitem_kind(config: dict[str, Any], kind: str) -> dict[str, Any]:
+    """按云效工作项类型返回创建配置。"""
+    if kind == "task":
+        return {
+            **config,
+            "category": _clean_text(config.get("taskCategory")) or "Task",
+            "workitemTypeIdentifier": _clean_text(config.get("taskWorkitemTypeIdentifier")),
+        }
+    return {
+        **config,
+        "category": _clean_text(config.get("requirementCategory")) or _clean_text(config.get("category")) or "Req",
+        "workitemTypeIdentifier": _clean_text(
+            config.get("requirementWorkitemTypeIdentifier") or config.get("workitemTypeIdentifier")
+        ),
+    }
+
+
+def _require_task_workitem_config(config: dict[str, Any]) -> None:
+    """确保结构化任务不会被错误创建成需求类型。"""
+    if _clean_text(config.get("taskWorkitemTypeIdentifier")):
+        return
+    source = "adapter_yunxiao_project_config.task_workitem_type_identifier"
+    if config.get("configSource") == "env":
+        source = "YUNXIAO_TASK_WORKITEM_TYPE_IDENTIFIER"
+    raise YunxiaoError(
+        "Yunxiao task workitem type is missing: "
+        f"configure {source}. Requirements and tasks are different Yunxiao workitem types."
+    )
 
 
 def _validate_close_target(config: dict[str, Any]) -> None:
@@ -1160,6 +1204,10 @@ def _create_yunxiao_requirement_tree(
     created_demands: list[dict[str, Any]] = []
     created_task_ids: list[str] = []
     primary_demand: dict[str, Any] | None = None
+    demand_config = _config_for_workitem_kind(config, "requirement")
+    task_config = _config_for_workitem_kind(config, "task")
+    if any((demand.get("items") or []) for demand in demands if isinstance(demand, dict)):
+        _require_task_workitem_config(config)
     try:
         for demand in demands:
             demand_title = _clean_text(demand.get("title")) or _clean_text(requirement.get("documentTitle")) or _clean_text(
@@ -1170,7 +1218,7 @@ def _create_yunxiao_requirement_tree(
             demand_description = _build_requirement_demand_description(workflow, requirement, demand, operator)
             demand_result = _create_yunxiao_single_workitem(
                 workflow,
-                config,
+                demand_config,
                 operator,
                 subject=demand_title,
                 description=demand_description,
@@ -1184,6 +1232,8 @@ def _create_yunxiao_requirement_tree(
                 "description": _clean_text(demand.get("description")),
                 "workitemIdentifier": demand_result["workitemIdentifier"],
                 "workitemDisplayId": demand_result.get("workitemDisplayId"),
+                "category": demand_result.get("category"),
+                "workitemTypeIdentifier": demand_result.get("workitemTypeIdentifier"),
                 "items": demand_items,
             }
             created_demands.append(demand_record)
@@ -1196,7 +1246,7 @@ def _create_yunxiao_requirement_tree(
                 item_description = _build_requirement_task_description(workflow, requirement, demand, item, operator)
                 item_result = _create_yunxiao_single_workitem(
                     workflow,
-                    config,
+                    task_config,
                     operator,
                     subject=item_title,
                     description=item_description,
@@ -1214,6 +1264,8 @@ def _create_yunxiao_requirement_tree(
                         "contentLines": [str(line) for line in item.get("contentLines") or [] if str(line).strip()],
                         "workitemIdentifier": item_result["workitemIdentifier"],
                         "workitemDisplayId": item_result.get("workitemDisplayId"),
+                        "category": item_result.get("category"),
+                        "workitemTypeIdentifier": item_result.get("workitemTypeIdentifier"),
                     }
                 )
     except YunxiaoError as exc:
@@ -1232,8 +1284,8 @@ def _create_yunxiao_requirement_tree(
         "projectId": config["projectId"],
         "projectName": config.get("projectName"),
         "organizationId": config["organizationId"],
-        "category": config["category"],
-        "workitemTypeIdentifier": config["workitemTypeIdentifier"],
+        "category": root.get("category") or demand_config["category"],
+        "workitemTypeIdentifier": root.get("workitemTypeIdentifier") or demand_config["workitemTypeIdentifier"],
         "assignee": root.get("assignee")
         or {
             "name": config.get("assigneeName"),

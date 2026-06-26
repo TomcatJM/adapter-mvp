@@ -85,8 +85,14 @@ def main() -> None:
     parser.add_argument("--organization-id", help="云效企业/组织 ID")
     parser.add_argument("--project-id", help="云效项目 ID 或 spaceIdentifier")
     parser.add_argument("--sprint-id", help="云效迭代 ID，旧接口可选")
-    parser.add_argument("--workitem-category", default="Req", help="云效工作项分类，例如 Req")
-    parser.add_argument("--workitem-type-identifier", help="云效工作项类型 ID")
+    parser.add_argument("--workitem-category", default="Req", help="云效需求工作项分类，例如 Req")
+    parser.add_argument("--workitem-type-identifier", help="云效需求工作项类型 ID")
+    parser.add_argument("--task-workitem-category", default=os.getenv("YUNXIAO_TASK_WORKITEM_CATEGORY") or "Task")
+    parser.add_argument(
+        "--task-workitem-type-identifier",
+        default=os.getenv("YUNXIAO_TASK_WORKITEM_TYPE_IDENTIFIER") or os.getenv("YUNXIAO_TASK_WORKITEM_TYPE_ID"),
+        help="云效任务工作项类型 ID",
+    )
     parser.add_argument("--default-assignee", help="兼容字段：项目表默认负责人云效账号 ID")
     parser.add_argument("--member-name", help="项目人员姓名，例如 姬志猛")
     parser.add_argument("--member-account-id", help="项目人员云效账号 ID")
@@ -238,6 +244,8 @@ def main() -> None:
                         sprint_id,
                         workitem_category,
                         workitem_type_identifier,
+                        task_workitem_category,
+                        task_workitem_type_identifier,
                         default_assignee,
                         priority_field_id,
                         priority_default_value,
@@ -252,7 +260,7 @@ def main() -> None:
                         close_transition_id,
                         remark
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON DUPLICATE KEY UPDATE
                         account_name = VALUES(account_name),
                         organization_id = VALUES(organization_id),
@@ -260,6 +268,8 @@ def main() -> None:
                         sprint_id = VALUES(sprint_id),
                         workitem_category = VALUES(workitem_category),
                         workitem_type_identifier = VALUES(workitem_type_identifier),
+                        task_workitem_category = VALUES(task_workitem_category),
+                        task_workitem_type_identifier = VALUES(task_workitem_type_identifier),
                         default_assignee = VALUES(default_assignee),
                         priority_field_id = VALUES(priority_field_id),
                         priority_default_value = VALUES(priority_default_value),
@@ -282,6 +292,8 @@ def main() -> None:
                         args.sprint_id,
                         args.workitem_category,
                         args.workitem_type_identifier,
+                        args.task_workitem_category,
+                        args.task_workitem_type_identifier,
                         args.default_assignee,
                         args.priority_field_id,
                         args.priority_default_value,

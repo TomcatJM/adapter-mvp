@@ -16,6 +16,7 @@ ENV = {
     "YUNXIAO_ORGANIZATION_ID": "org-1",
     "YUNXIAO_PROJECT_ID": "project-1",
     "YUNXIAO_WORKITEM_TYPE_IDENTIFIER": "type-req",
+    "YUNXIAO_TASK_WORKITEM_TYPE_IDENTIFIER": "type-task",
     "YUNXIAO_WORKITEM_ASSIGNEE": "account-1",
 }
 
@@ -292,8 +293,38 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
         self.assertEqual(result["demands"][0]["workitemIdentifier"], "REQ-ROOT")
         self.assertEqual(result["demands"][0]["items"][0]["workitemIdentifier"], "TASK-1")
         self.assertEqual([item["payload"]["subject"] for item in captured], ["需求一", "任务一"])
+        self.assertEqual(captured[0]["payload"]["category"], "Req")
+        self.assertEqual(captured[0]["payload"]["workitemTypeIdentifier"], "type-req")
+        self.assertEqual(captured[1]["payload"]["category"], "Task")
+        self.assertEqual(captured[1]["payload"]["workitemTypeIdentifier"], "type-task")
         self.assertEqual(captured[1]["payload"]["parentIdentifier"], "REQ-ROOT")
+        self.assertEqual(result["demands"][0]["category"], "Req")
+        self.assertEqual(result["demands"][0]["workitemTypeIdentifier"], "type-req")
+        self.assertEqual(result["demands"][0]["items"][0]["category"], "Task")
+        self.assertEqual(result["demands"][0]["items"][0]["workitemTypeIdentifier"], "type-task")
         self.assertIn("主要内容：", captured[1]["payload"]["description"])
+
+    def test_create_workitem_tree_requires_task_workitem_type_for_items(self) -> None:
+        from app.yunxiao import YunxiaoError, create_yunxiao_workitem
+
+        workflow = _workflow()
+        workflow["context"]["requirement"] = {
+            "summary": "新增客户跟进记录接口",
+            "demands": [
+                {
+                    "demandIndex": 1,
+                    "title": "需求一",
+                    "items": [{"itemIndex": 1, "title": "任务一"}],
+                }
+            ],
+        }
+        env_without_task_type = {key: value for key, value in ENV.items() if key != "YUNXIAO_TASK_WORKITEM_TYPE_IDENTIFIER"}
+
+        with patch.dict(os.environ, env_without_task_type, clear=True):
+            with self.assertRaises(YunxiaoError) as raised:
+                create_yunxiao_workitem(workflow, "codex")
+
+        self.assertIn("Yunxiao task workitem type is missing", str(raised.exception))
 
     def test_create_workitem_tree_missing_requested_owner_fails_explicitly(self) -> None:
         from app.yunxiao import YunxiaoError, create_yunxiao_workitem
