@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app import db
-from app.yunxiao_pipeline import _yunxiao_task_ids_from_commit_message
+from app.yunxiao_pipeline import yunxiao_close_task_ids_from_commit_message
 from app.yunxiao_guard import (
     YunxiaoWorkflowGuardError,
     assert_yunxiao_close_plan_valid,
@@ -141,16 +141,26 @@ def _request_create_workitem(payload: dict[str, Any], config: dict[str, Any]) ->
     )
 
 
-def close_yunxiao_workitem(workflow: dict[str, Any], operator: str | None = None) -> dict[str, Any]:
+def close_yunxiao_workitem(
+    workflow: dict[str, Any],
+    operator: str | None = None,
+    *,
+    explicit_refs: list[str] | None = None,
+) -> dict[str, Any]:
     """关闭云效工作项。"""
-    explicit_refs = _workflow_explicit_close_references(workflow)
-    if not explicit_refs:
+    close_refs = _unique_texts(explicit_refs or _workflow_explicit_close_references(workflow))
+    if not close_refs:
         raise YunxiaoCloseSkipped(
             "Yunxiao explicit close task ids missing: add commit message line like "
             "'云效任务: AYRR-4062、 AYRR-4063'. No Yunxiao workitem will be closed."
         )
 
-    workitem_ids = _workflow_close_workitem_ids(workflow, explicit_refs)
+    try:
+        assert_yunxiao_close_plan_valid(workflow)
+    except YunxiaoWorkflowGuardError as exc:
+        raise YunxiaoError(str(exc)) from exc
+
+    workitem_ids = _workflow_close_workitem_ids(workflow, close_refs)
     if not workitem_ids:
         if not _workflow_has_requirement_tree(workflow) and not _clean_text(workflow.get("yunxiaoTaskId")):
             raise YunxiaoError(
@@ -159,12 +169,8 @@ def close_yunxiao_workitem(workflow: dict[str, Any], operator: str | None = None
             )
         raise YunxiaoCloseSkipped(
             "Yunxiao explicit close task ids did not match workflow child tasks: "
-            f"explicitTaskIds={', '.join(explicit_refs)}. No Yunxiao workitem will be closed."
+            f"explicitTaskIds={', '.join(close_refs)}. No Yunxiao workitem will be closed."
         )
-    try:
-        assert_yunxiao_close_plan_valid(workflow)
-    except YunxiaoWorkflowGuardError as exc:
-        raise YunxiaoError(str(exc)) from exc
 
     config = _load_config(workflow, purpose="close")
     if config.get("authType") == "legacy_token":
@@ -327,7 +333,7 @@ def _workflow_explicit_close_references(workflow: dict[str, Any]) -> list[str]:
     ]
     refs: list[str] = []
     for message in messages:
-        refs.extend(_yunxiao_task_ids_from_commit_message(_clean_text(message) or ""))
+        refs.extend(yunxiao_close_task_ids_from_commit_message(_clean_text(message) or ""))
     return _unique_texts(refs)
 
 
@@ -372,23 +378,21 @@ def _workflow_requirement_task_reference_records(workflow: dict[str, Any]) -> li
     yunxiao = context.get("yunxiao") if isinstance(context.get("yunxiao"), dict) else {}
     create_result = yunxiao.get("createResult") if isinstance(yunxiao.get("createResult"), dict) else {}
     records: dict[str, set[str]] = {}
-    for key in ("taskIdentifiers", "taskIds"):
-        values = create_result.get(key)
-        if isinstance(values, list):
-            for value in values:
-                workitem_id = _clean_text(value)
-                if workitem_id:
-                    records.setdefault(workitem_id, set()).add(workitem_id)
     demands = create_result.get("demands")
     if isinstance(demands, list):
         for demand in demands:
             if not isinstance(demand, dict):
                 continue
+            demand_id = _clean_text(demand.get("workitemIdentifier"))
             items = demand.get("items")
             if not isinstance(items, list):
                 continue
             for item in items:
                 if not isinstance(item, dict):
+                    continue
+                if _clean_text(item.get("category")) != "Task":
+                    continue
+                if demand_id and _clean_text(item.get("parentIdentifier")) != demand_id:
                     continue
                 workitem_id = _clean_text(item.get("workitemIdentifier"))
                 if not workitem_id:

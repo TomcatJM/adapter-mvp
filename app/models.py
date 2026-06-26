@@ -98,6 +98,7 @@ class WorkflowAdvanceRequest(BaseModel):
     workbook_id: str | None = Field(default=None, alias="workbookId")
     range: str = "A1:J50"
     timeout: int = Field(default=60, ge=5, le=180)
+    close_task_refs: list[str] = Field(default_factory=list, alias="closeTaskRefs")
 
     model_config = {"populate_by_name": True}
 

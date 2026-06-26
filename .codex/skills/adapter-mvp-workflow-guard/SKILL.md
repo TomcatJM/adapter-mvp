@@ -17,8 +17,8 @@ description: Enforce Adapter MVP workflow guardrails for DingTalk requirement do
    - `demandIndex` and `itemIndex` are ordering hints only; never infer or overwrite a demand title from indexes, document title, requirement key, the first demand, or another demand.
    - If the demand title or task ownership is ambiguous, fail explicitly or ask the user. Do not silently guess.
    - Document version maps to Yunxiao sprint; missing or ambiguous sprint must fail explicitly.
-   - Close/writeback closes only child task IDs explicitly listed in the commit message `云效任务` field; never close the root demand.
-   - If the commit message has no explicit Yunxiao task IDs, skip close/writeback. Do not close all tasks by default.
+   - Close/writeback closes only real child task IDs explicitly listed in the commit message `云效任务` field or manual `closeTaskRefs`; never close any demand.
+   - If there are no explicit Yunxiao task IDs, skip close/writeback. Do not close all tasks by default.
 4. Reject silent fallbacks for missing project, Apifox project, sprint, assignee, task type, token, or close status config.
 5. Keep commit parsing user-friendly: support Chinese labels such as `云效ID`、`云效任务`、`任务编号`, not only one English key, and support multiple IDs such as `云效任务: AYRR-4062、 AYRR-4063`.
 6. After changes, run focused tests first, then the full unit test suite and compile check.

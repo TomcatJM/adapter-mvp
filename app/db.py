@@ -1112,6 +1112,49 @@ def record_workflow_apifox_result(
     return workflow
 
 
+def record_workflow_context_event(
+    *,
+    workflow_id: str,
+    status: str,
+    context: dict[str, Any],
+    operator: str | None,
+    event_type: str,
+    message: str,
+    event_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """记录工作流上下文事件，不改变当前状态。"""
+    _require_configured()
+    ensure_schema()
+    clipped_message = str(message or "")[:1024]
+    with connect() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE adapter_workflow_instance
+                SET context_json = %s
+                WHERE workflow_id = %s
+                  AND status = %s
+                """,
+                (dumps(context), workflow_id, status),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError(f"Workflow status is not {status}: {workflow_id}")
+            _insert_workflow_event(
+                cursor,
+                workflow_id=workflow_id,
+                event_type=event_type,
+                from_status=status,
+                to_status=status,
+                operator=operator,
+                message=clipped_message,
+                payload=event_payload,
+            )
+    workflow = find_workflow_instance(workflow_id)
+    if not workflow:
+        raise ValueError(f"Workflow not found: {workflow_id}")
+    return workflow
+
+
 def mark_workflow_needs_human(
     *,
     workflow_id: str,

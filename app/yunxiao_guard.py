@@ -67,10 +67,31 @@ def assert_yunxiao_close_plan_valid(workflow: dict[str, Any]) -> None:
         return
     task_ids = _clean_list(create_result.get("taskIdentifiers") or create_result.get("taskIds"))
     root_id = _clean(create_result.get("workitemIdentifier") or workflow.get("yunxiaoTaskId"))
+    demand_ids = [_clean(demand.get("workitemIdentifier")) for demand in _demands(create_result)]
+    demand_ids = [demand_id for demand_id in demand_ids if demand_id]
+    item_task_ids = [
+        _clean(item.get("workitemIdentifier"))
+        for demand in _demands(create_result)
+        for item in _items(demand)
+        if _clean(item.get("category")) == "Task"
+    ]
+    item_task_ids = [task_id for task_id in item_task_ids if task_id]
     errors: list[str] = []
     _expect(task_ids, errors, "requirement-tree workflow must have child task ids before close")
     if root_id:
         _expect(root_id not in task_ids, errors, "close task list must not include root requirement id")
+    demand_conflicts = sorted(set(task_ids).intersection(demand_ids))
+    _expect(
+        not demand_conflicts,
+        errors,
+        "close task list must not include requirement demand id: " + ", ".join(demand_conflicts),
+    )
+    missing_from_items = sorted(set(task_ids).difference(item_task_ids))
+    _expect(
+        not missing_from_items,
+        errors,
+        "close task list must only include created child task ids: " + ", ".join(missing_from_items),
+    )
     if errors:
         raise YunxiaoWorkflowGuardError("Yunxiao close plan guard failed: " + "; ".join(errors))
 

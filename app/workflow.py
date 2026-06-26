@@ -447,7 +447,11 @@ def _advance_apifox_synced_to_yunxiao_closed(
     """内部辅助函数：推进Apifoxsyncedto云效已关闭。"""
     workflow_id = workflow["workflowId"]
     try:
-        result = close_yunxiao_workitem(workflow, _clean_text(request.operator))
+        result = close_yunxiao_workitem(
+            workflow,
+            _clean_text(request.operator),
+            explicit_refs=request.close_task_refs or None,
+        )
     except YunxiaoCloseSkipped as exc:
         return {
             "workflow": workflow,

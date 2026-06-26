@@ -442,7 +442,7 @@ class YunxiaoWorkitemCloseTest(unittest.TestCase):
                 close_yunxiao_workitem(workflow, "codex")
 
         get_workitem.assert_not_called()
-        self.assertIn("explicit close task ids did not match", str(raised.exception))
+        self.assertIn("requirement-tree workflow must have child task ids", str(raised.exception))
 
     def test_close_workitem_tree_rejects_root_requirement_in_task_ids(self) -> None:
         from app.yunxiao import YunxiaoError, close_yunxiao_workitem
@@ -487,6 +487,80 @@ class YunxiaoWorkitemCloseTest(unittest.TestCase):
 
         get_workitem.assert_not_called()
         self.assertIn("must not include root requirement id", str(raised.exception))
+
+    def test_close_workitem_tree_rejects_demand_id_even_when_listed_as_task_identifier(self) -> None:
+        from app.yunxiao import YunxiaoError, close_yunxiao_workitem
+
+        workflow = {
+            **_workflow(),
+            "yunxiaoTaskId": "REQ-ROOT",
+            "context": {
+                **_workflow()["context"],
+                "yunxiao": {
+                    "createResult": {
+                        "workitemIdentifier": "REQ-ROOT",
+                        "category": "Req",
+                        "demandCount": 1,
+                        "taskCount": 1,
+                        "demands": [
+                            {
+                                "workitemIdentifier": "REQ-1",
+                                "category": "Req",
+                                "items": [],
+                            }
+                        ],
+                        "taskIdentifiers": ["REQ-1"],
+                    }
+                },
+                "pipeline": {
+                    **_workflow()["context"]["pipeline"],
+                    "commitMessage": "feat: invalid demand close\n\n云效任务: REQ-1",
+                },
+            },
+        }
+
+        with patch.dict(os.environ, ENV, clear=True), patch("app.yunxiao.get_yunxiao_workitem") as get_workitem:
+            with self.assertRaises(YunxiaoError) as raised:
+                close_yunxiao_workitem(workflow, "codex")
+
+        get_workitem.assert_not_called()
+        self.assertIn("must not include requirement demand id", str(raised.exception))
+
+    def test_close_workitem_accepts_explicit_refs_argument_when_commit_message_missing(self) -> None:
+        from app.yunxiao import close_yunxiao_workitem
+
+        workflow = {
+            **_workflow(),
+            "context": {
+                **_workflow()["context"],
+                "pipeline": {
+                    **_workflow()["context"]["pipeline"],
+                    "commitMessage": None,
+                },
+            },
+        }
+        captured: list[dict] = []
+
+        def fake_request(**kwargs):
+            captured.append(kwargs)
+            if kwargs["action"] == "GetWorkItemInfo" and len([item for item in captured if item["action"] == "GetWorkItemInfo"]) == 1:
+                return {"success": True, "data": {"identifier": "YX-1", "serialNumber": "VEGZ-1186", "statusIdentifier": "doing"}}
+            if kwargs["action"] == "GetWorkItemInfo":
+                return {"success": True, "data": {"identifier": "YX-1", "serialNumber": "VEGZ-1186", "statusIdentifier": "done"}}
+            return {"success": True}
+
+        with patch.dict(os.environ, ENV, clear=True), patch(
+            "app.yunxiao._request_yunxiao_openapi", side_effect=fake_request
+        ):
+            result = close_yunxiao_workitem(workflow, "codex", explicit_refs=["VEGZ-1186"])
+
+        self.assertEqual(result["closedTaskIds"], ["YX-1"])
+        self.assertEqual([item["action"] for item in captured], [
+            "GetWorkItemInfo",
+            "CreateWorkitemComment",
+            "UpdateWorkItem",
+            "GetWorkItemInfo",
+        ])
 
     def test_close_workitem_missing_done_status_fails_explicitly(self) -> None:
         from app.yunxiao import YunxiaoError, close_yunxiao_workitem
@@ -693,6 +767,37 @@ class YunxiaoWorkitemCloseTest(unittest.TestCase):
         self.assertFalse(result["advanced"])
         self.assertEqual(result["workflow"]["status"], "APIFOX_SYNCED")
         self.assertIn("explicit close task ids missing", result["reason"])
+
+    def test_advance_apifox_synced_passes_request_close_task_refs(self) -> None:
+        from app.models import WorkflowAdvanceRequest
+        from app.workflow import advance_workflow
+
+        workflow = _workflow()
+
+        with patch("app.workflow.db.find_workflow_instance", return_value=workflow), patch(
+            "app.workflow.close_yunxiao_workitem",
+            return_value={
+                "workitemIdentifier": "YX-1",
+                "workitemDisplayId": "VEGZ-1186",
+                "alreadyClosed": False,
+                "closedStatus": "done",
+                "closedStatusName": "已完成",
+                "writeback": "success",
+                "closedTaskIds": ["YX-1"],
+                "skippedTaskIds": [],
+                "configSource": "env",
+            },
+        ) as close_workitem, patch(
+            "app.workflow.db.update_workflow_yunxiao_task_closed",
+            return_value={**workflow, "status": "YUNXIAO_TASK_CLOSED"},
+        ):
+            result = advance_workflow(
+                "wf-close-1",
+                WorkflowAdvanceRequest(operator="codex", closeTaskRefs=["VEGZ-1186"]),
+            )
+
+        self.assertTrue(result["advanced"])
+        close_workitem.assert_called_once_with(workflow, "codex", explicit_refs=["VEGZ-1186"])
 
     def test_advance_apifox_synced_close_failure_marks_needs_human(self) -> None:
         from app.models import WorkflowAdvanceRequest

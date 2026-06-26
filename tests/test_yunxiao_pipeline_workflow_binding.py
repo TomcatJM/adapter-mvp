@@ -283,6 +283,44 @@ class YunxiaoPipelineWorkflowBindingTest(unittest.TestCase):
         self.assertEqual(result["workflow"]["bindingSource"], "commit_message_yunxiao_task_id")
         self.assertEqual(result["workflow"]["workflow"]["status"], "PIPELINE_SUCCESS")
 
+    def test_success_refreshes_pipeline_context_when_workflow_already_apifox_synced(self) -> None:
+        from app.models import YunxiaoPipelineFailureCallback
+        from app.yunxiao_pipeline import handle_pipeline_success
+
+        workflow = {
+            "workflowId": "wf-test-1",
+            "yunxiaoTaskId": "YX-1",
+            "status": "APIFOX_SYNCED",
+            "context": {"pipeline": {"pipelineId": "pipe-1", "buildNumber": "87"}},
+        }
+        captured = {}
+
+        def fake_record(**kwargs):
+            captured.update(kwargs)
+            return {**workflow, "context": kwargs["context"]}
+
+        callback = YunxiaoPipelineFailureCallback(
+            taskId="yx-flow-pipe-1-88",
+            pipelineId="pipe-1",
+            buildNumber="88",
+            stageName="release",
+            branchName="develop",
+            commitId="abc123",
+            commitMessage="feat: 验证链路\n\n云效任务: VEGZ-1186",
+        )
+
+        with patch("app.yunxiao_pipeline.db.find_workflow_by_yunxiao_task_id", return_value=workflow), patch(
+            "app.yunxiao_pipeline.db.record_workflow_context_event", side_effect=fake_record
+        ) as record_result:
+            result = handle_pipeline_success({}, callback)
+
+        record_result.assert_called_once()
+        self.assertFalse(result["workflow"]["advanced"])
+        self.assertEqual(captured["status"], "APIFOX_SYNCED")
+        self.assertEqual(captured["event_type"], "pipeline_success_context_refreshed")
+        self.assertEqual(captured["context"]["pipeline"]["buildNumber"], "88")
+        self.assertEqual(captured["context"]["pipeline"]["commitMessage"], "feat: 验证链路\n\n云效任务: VEGZ-1186")
+
     def test_success_binds_by_yunxiao_display_id_in_commit_title(self) -> None:
         from app.models import YunxiaoPipelineFailureCallback
         from app.yunxiao_pipeline import handle_pipeline_success

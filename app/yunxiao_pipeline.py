@@ -36,6 +36,9 @@ YUNXIAO_TASK_COMMIT_ALIASES = (
     "yunxiao_task_id",
     "yunxiao_task_display_id",
 )
+YUNXIAO_CLOSE_TASK_COMMIT_ALIASES = tuple(
+    alias for alias in YUNXIAO_TASK_COMMIT_ALIASES if alias != "REQUIREMENT_ID"
+)
 YUNXIAO_TASK_PARAM_ALIASES = (
     *(alias for alias in YUNXIAO_TASK_COMMIT_ALIASES if alias != "TASK_ID"),
     "requirementId",
@@ -61,10 +64,15 @@ YUNXIAO_TASK_CHINESE_ALIASES = (
     "任务编号",
 )
 YUNXIAO_TASK_COMMIT_ALIAS_RE = "|".join(re.escape(alias) for alias in YUNXIAO_TASK_COMMIT_ALIASES)
+YUNXIAO_CLOSE_TASK_COMMIT_ALIAS_RE = "|".join(re.escape(alias) for alias in YUNXIAO_CLOSE_TASK_COMMIT_ALIASES)
 YUNXIAO_TASK_CHINESE_ALIAS_RE = "|".join(re.escape(alias) for alias in YUNXIAO_TASK_CHINESE_ALIASES)
 YUNXIAO_TASK_CHINESE_KEY_RE = (
     r"云效\s*(?:(?:任务|工作项|需求)\s*(?:展示|页面|显示)?\s*(?:ID|Id|id|编号)?|"
     r"(?:展示|页面|显示)\s*(?:ID|Id|id|编号)?|(?:ID|Id|id|编号))"
+)
+YUNXIAO_CLOSE_TASK_CHINESE_KEY_RE = (
+    r"云效\s*(?:(?:任务|工作项)\s*(?:展示|页面|显示)?\s*(?:ID|Id|id|编号)?|"
+    r"(?:ID|Id|id|编号))"
 )
 COMMIT_WORKFLOW_PATTERNS = (
     re.compile(rf"(?im)^\s*(?:WORKFLOW_ID|WORKFLOWID|workflowId|workflow_id)\s*[:=：]\s*{IDENTIFIER_RE}\b"),
@@ -86,6 +94,14 @@ COMMIT_YUNXIAO_TASK_VALUE_PATTERNS = (
     re.compile(rf"(?m)^\s*(?:{YUNXIAO_TASK_CHINESE_ALIAS_RE})\s*[:=：]\s*([^\r\n]+)"),
     re.compile(rf"(?i)(?:^|[\s,;，；])(?:{YUNXIAO_TASK_COMMIT_ALIAS_RE})\s*[:=：]\s*([^\r\n]+)"),
     re.compile(rf"(?i)(?:^|[\s,;，；])(?:{YUNXIAO_TASK_CHINESE_KEY_RE})\s*[:=：]\s*([^\r\n]+)"),
+    re.compile(rf"(?:^|[\s,;，；])(?:{YUNXIAO_TASK_CHINESE_ALIAS_RE})\s*[:=：]\s*([^\r\n]+)"),
+)
+COMMIT_YUNXIAO_CLOSE_TASK_VALUE_PATTERNS = (
+    re.compile(rf"(?im)^\s*(?:{YUNXIAO_CLOSE_TASK_COMMIT_ALIAS_RE})\s*[:=：]\s*([^\r\n]+)"),
+    re.compile(rf"(?im)^\s*(?:{YUNXIAO_CLOSE_TASK_CHINESE_KEY_RE})\s*[:=：]\s*([^\r\n]+)"),
+    re.compile(rf"(?m)^\s*(?:{YUNXIAO_TASK_CHINESE_ALIAS_RE})\s*[:=：]\s*([^\r\n]+)"),
+    re.compile(rf"(?i)(?:^|[\s,;，；])(?:{YUNXIAO_CLOSE_TASK_COMMIT_ALIAS_RE})\s*[:=：]\s*([^\r\n]+)"),
+    re.compile(rf"(?i)(?:^|[\s,;，；])(?:{YUNXIAO_CLOSE_TASK_CHINESE_KEY_RE})\s*[:=：]\s*([^\r\n]+)"),
     re.compile(rf"(?:^|[\s,;，；])(?:{YUNXIAO_TASK_CHINESE_ALIAS_RE})\s*[:=：]\s*([^\r\n]+)"),
 )
 YUNXIAO_REFERENCE_KEYS = {
@@ -130,6 +146,16 @@ def handle_pipeline_success(payload: dict[str, Any], callback: YunxiaoPipelineFa
 
     status = workflow["status"]
     if status == "APIFOX_SYNCED":
+        context = _merge_context(workflow, {"pipeline": _pipeline_context(callback)})
+        workflow = db.record_workflow_context_event(
+            workflow_id=workflow["workflowId"],
+            status="APIFOX_SYNCED",
+            context=context,
+            operator=callback.operator,
+            event_type="pipeline_success_context_refreshed",
+            message="Pipeline success context refreshed",
+            event_payload={"pipeline": _pipeline_context(callback)},
+        )
         return {
             "workflow": {
                 "bound": True,
@@ -658,6 +684,15 @@ def _yunxiao_task_ids_from_commit_message(text: str) -> list[str]:
     if not values:
         for pattern in COMMIT_YUNXIAO_TASK_PATTERNS:
             values.extend(match.group(1) for match in pattern.finditer(text))
+    return _unique_texts(values)
+
+
+def yunxiao_close_task_ids_from_commit_message(text: str) -> list[str]:
+    """从提交信息中提取显式允许关单的云效任务引用。"""
+    values: list[str] = []
+    for pattern in COMMIT_YUNXIAO_CLOSE_TASK_VALUE_PATTERNS:
+        for match in pattern.finditer(text):
+            values.extend(_identifier_values(match.group(1)))
     return _unique_texts(values)
 
 
