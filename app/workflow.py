@@ -377,6 +377,7 @@ def _advance_requirement_to_yunxiao_task(workflow: dict[str, Any], request: Work
                     "title": result.get("title"),
                     "description": result.get("description"),
                     "parentIdentifier": result.get("parentIdentifier"),
+                    "sprintId": result.get("sprintId"),
                     "demandCount": result.get("demandCount"),
                     "taskCount": result.get("taskCount"),
                     "demands": result.get("demands"),

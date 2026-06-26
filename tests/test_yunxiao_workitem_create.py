@@ -235,6 +235,57 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
         self.assertEqual(captured[0]["config"]["personalToken"], "pat-secret")
         self.assertEqual(captured[1]["path"], "/oapi/v1/projex/organizations/org-pat/workitems/YX-PAT-1")
 
+    def test_personal_token_payload_maps_parent_identifier_to_parent_id(self) -> None:
+        from app.yunxiao import _personal_token_workitem_payload
+
+        payload = {
+            "subject": "任务一",
+            "description": "任务描述",
+            "assignedTo": "account-pat",
+            "parentIdentifier": "REQ-ROOT",
+            "sprint": "sprint-1",
+        }
+
+        result = _personal_token_workitem_payload(
+            payload,
+            {
+                "projectId": "project-pat",
+                "category": "Task",
+                "workitemTypeIdentifier": "type-task",
+            },
+        )
+
+        self.assertEqual(result["parentId"], "REQ-ROOT")
+        self.assertEqual(result["sprint"], "sprint-1")
+
+    def test_build_payload_resolves_sprint_from_requirement_version_for_personal_token(self) -> None:
+        from app.yunxiao import build_create_workitem_payload
+
+        workflow = _workflow()
+        workflow["context"]["requirement"]["version"] = "V1.0.0"
+        config = {
+            "authType": "personal_token",
+            "scheme": "https",
+            "endpoint": "openapi-rdc.aliyuncs.com",
+            "organizationId": "org-pat",
+            "projectId": "project-pat",
+            "personalToken": "pat-secret",
+            "category": "Req",
+            "workitemTypeIdentifier": "type-req",
+            "assignee": "account-pat",
+            "timeout": 30,
+        }
+
+        def fake_request(**kwargs):
+            self.assertEqual(kwargs["method"], "GET")
+            self.assertIn("/sprints?", kwargs["path"])
+            return [{"id": "sprint-1", "name": "CRM-集团-V1.0.0", "status": "TODO"}]
+
+        with patch("app.yunxiao._request_yunxiao_personal_token_rest", side_effect=fake_request):
+            payload = build_create_workitem_payload(workflow, config, "codex")
+
+        self.assertEqual(payload["sprint"], "sprint-1")
+
     def test_create_workitem_tree_creates_parent_and_child_tasks(self) -> None:
         from app.yunxiao import create_yunxiao_workitem
 
@@ -730,6 +781,7 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
                 "category": "Req",
                 "workitemTypeIdentifier": "type-req",
                 "title": "新增客户跟进记录接口",
+                "sprintId": "sprint-1",
             },
         ), patch("app.workflow.db.update_workflow_yunxiao_task_created", side_effect=fake_created), patch(
             "app.workflow.db.update_workflow_coding_requested", side_effect=fake_coding
@@ -742,6 +794,7 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
         self.assertEqual(result["yunxiao"]["workitemDisplayId"], "VEGZ-1186")
         self.assertEqual(captured["created"]["from_status"], "REQUIREMENT_PARSED")
         self.assertEqual(captured["created"]["yunxiao_task_id"], "YX-1")
+        self.assertEqual(captured["created"]["context"]["yunxiao"]["createResult"]["sprintId"], "sprint-1")
         self.assertEqual(captured["created"]["event_payload"]["yunxiaoTaskDisplayId"], "VEGZ-1186")
         self.assertEqual(captured["coding"]["event_payload"]["yunxiaoTaskId"], "YX-1")
         self.assertEqual(captured["coding"]["event_payload"]["yunxiaoTaskDisplayId"], "VEGZ-1186")

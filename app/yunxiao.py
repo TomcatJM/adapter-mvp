@@ -466,10 +466,128 @@ def build_create_workitem_payload(
     verifier = _clean_text(config.get("verifier"))
     if verifier:
         payload["verifier"] = verifier
-    sprint_id = _clean_text(config.get("sprintId"))
+    sprint_id = _resolve_workitem_sprint_id(workflow, requirement, config)
     if sprint_id:
         payload["sprint"] = sprint_id
     return payload
+
+
+def _resolve_workitem_sprint_id(workflow: dict[str, Any], requirement: dict[str, Any], config: dict[str, Any]) -> str | None:
+    """解析云效迭代ID：项目配置优先，其次按需求文档版本号匹配云效迭代。"""
+    configured_sprint_id = _clean_text(config.get("sprintId"))
+    if configured_sprint_id:
+        return configured_sprint_id
+    version = _clean_text(requirement.get("version"))
+    if not version:
+        return None
+    if config.get("authType") != "personal_token":
+        raise YunxiaoError(
+            "Yunxiao sprint is unresolved: requirement version is present but sprint_id is not configured. "
+            f"version={version} projectName={config.get('projectName') or workflow.get('requirementKey') or ''}"
+        )
+    sprint = _find_personal_token_sprint_by_version(version, config)
+    if not sprint:
+        raise YunxiaoError(
+            "Yunxiao sprint not found for requirement version: "
+            f"version={version} projectName={config.get('projectName') or ''}. "
+            "Create a matching Yunxiao sprint or configure adapter_yunxiao_project_config.sprint_id."
+        )
+    sprint_id = _clean_text(sprint.get("id") or sprint.get("identifier"))
+    if not sprint_id:
+        raise YunxiaoError(
+            "Yunxiao sprint matched but id is missing: "
+            f"version={version} sprintName={_clean_text(sprint.get('name'))}"
+        )
+    config["sprintId"] = sprint_id
+    config["sprintName"] = _clean_text(sprint.get("name"))
+    return sprint_id
+
+
+def _find_personal_token_sprint_by_version(version: str, config: dict[str, Any]) -> dict[str, Any] | None:
+    """按需求版本号从云效迭代列表中选择一个最匹配的迭代。"""
+    candidates = _list_personal_token_sprints(config, name=version)
+    matched = _select_sprint_candidate(version, candidates)
+    if matched:
+        return matched
+    candidates = _list_personal_token_sprints(config, name=None)
+    return _select_sprint_candidate(version, candidates)
+
+
+def _list_personal_token_sprints(config: dict[str, Any], *, name: str | None) -> list[dict[str, Any]]:
+    """查询云效迭代列表。"""
+    organization_id = urllib.parse.quote(config["organizationId"], safe="")
+    project_id = urllib.parse.quote(config["projectId"], safe="")
+    query = {
+        "status": "TODO,DOING,ARCHIVED",
+        "page": "1",
+        "perPage": "100",
+    }
+    if _clean_text(name):
+        query["name"] = _clean_text(name)
+    path = (
+        f"/oapi/v1/projex/organizations/{organization_id}/projects/{project_id}/sprints?"
+        + urllib.parse.urlencode(query)
+    )
+    response = _request_yunxiao_personal_token_rest(
+        method="GET",
+        path=path,
+        payload=None,
+        config=config,
+        timeout=config["timeout"],
+    )
+    return _extract_sprint_list(response)
+
+
+def _extract_sprint_list(response: Any) -> list[dict[str, Any]]:
+    """从云效迭代响应中提取列表。"""
+    if isinstance(response, list):
+        return [item for item in response if isinstance(item, dict)]
+    if not isinstance(response, dict):
+        return []
+    for source in _dict_candidates(response):
+        for key in ("sprints", "items", "list", "data", "result"):
+            value = source.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+            if isinstance(value, dict):
+                nested = _extract_sprint_list(value)
+                if nested:
+                    return nested
+    return []
+
+
+def _select_sprint_candidate(version: str, candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """选择与版本号匹配的迭代，优先未归档、精确匹配。"""
+    version_norm = _normalize_sprint_match_text(version)
+    if not version_norm:
+        return None
+    matched = [
+        candidate
+        for candidate in candidates
+        if version_norm in _normalize_sprint_match_text(candidate.get("name"))
+    ]
+    if not matched:
+        return None
+    exact = [item for item in matched if _normalize_sprint_match_text(item.get("name")) == version_norm]
+    if len(exact) == 1:
+        return exact[0]
+    active = [item for item in matched if _normalize_sprint_status(item.get("status")) in {"TODO", "DOING"}]
+    if len(active) == 1:
+        return active[0]
+    if len(matched) == 1:
+        return matched[0]
+    names = ", ".join(_clean_text(item.get("name")) for item in matched[:5])
+    raise YunxiaoError(f"Yunxiao sprint match is ambiguous: version={version} candidates={names}")
+
+
+def _normalize_sprint_match_text(value: Any) -> str:
+    """归一化迭代名称匹配文本。"""
+    return re.sub(r"\s+", "", str(value or "").strip()).lower()
+
+
+def _normalize_sprint_status(value: Any) -> str:
+    """归一化迭代状态。"""
+    return str(value or "").strip().upper()
 
 
 def _request_yunxiao_openapi(
@@ -643,6 +761,8 @@ def _personal_token_workitem_payload(payload: dict[str, Any], config: dict[str, 
     }
     if payload.get("fieldValueList"):
         personal_payload["fieldValueList"] = payload["fieldValueList"]
+    if payload.get("parentIdentifier"):
+        personal_payload["parentId"] = payload["parentIdentifier"]
     for key in ("participants", "trackers", "verifier", "sprint"):
         if payload.get(key):
             personal_payload[key] = payload[key]
@@ -1196,6 +1316,7 @@ def _create_yunxiao_requirement_tree(
             "title": payload["subject"],
             "description": payload["description"],
             "parentIdentifier": payload.get("parentIdentifier"),
+            "sprintId": payload.get("sprint"),
             "configSource": config.get("configSource"),
             "authType": config.get("authType"),
             "response": _safe_response(response),
@@ -1234,6 +1355,7 @@ def _create_yunxiao_requirement_tree(
                 "workitemDisplayId": demand_result.get("workitemDisplayId"),
                 "category": demand_result.get("category"),
                 "workitemTypeIdentifier": demand_result.get("workitemTypeIdentifier"),
+                "sprintId": demand_result.get("sprintId"),
                 "items": demand_items,
             }
             created_demands.append(demand_record)
@@ -1266,6 +1388,8 @@ def _create_yunxiao_requirement_tree(
                         "workitemDisplayId": item_result.get("workitemDisplayId"),
                         "category": item_result.get("category"),
                         "workitemTypeIdentifier": item_result.get("workitemTypeIdentifier"),
+                        "parentIdentifier": item_result.get("parentIdentifier"),
+                        "sprintId": item_result.get("sprintId"),
                     }
                 )
     except YunxiaoError as exc:
@@ -1295,6 +1419,7 @@ def _create_yunxiao_requirement_tree(
         "title": root.get("title"),
         "description": root.get("description"),
         "parentIdentifier": root.get("parentIdentifier"),
+        "sprintId": root.get("sprintId"),
         "configSource": config.get("configSource"),
         "authType": config.get("authType"),
         "response": root.get("response"),
@@ -1366,6 +1491,7 @@ def _create_yunxiao_single_workitem(
         "title": payload["subject"],
         "description": payload["description"],
         "parentIdentifier": payload.get("parentIdentifier"),
+        "sprintId": payload.get("sprint"),
         "configSource": config.get("configSource"),
         "authType": config.get("authType"),
         "response": _safe_response(response),
