@@ -4,4 +4,3 @@ pydantic==2.10.4
 PyYAML==6.0.2
 paramiko==3.5.0
 PyMySQL==1.1.1
-cryptography==48.0.0

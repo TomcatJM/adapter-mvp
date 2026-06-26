@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import os
@@ -8,8 +7,6 @@ from contextlib import contextmanager
 from datetime import datetime
 from threading import Lock
 from typing import Any, Iterator
-
-from cryptography.fernet import Fernet
 
 
 _schema_lock = Lock()
@@ -105,8 +102,7 @@ def ensure_schema() -> None:
                         client_id VARCHAR(128) NOT NULL COMMENT '调用方ID，例如 codex、yunxiao-flow',
                         client_name VARCHAR(128) NOT NULL COMMENT '调用方名称',
                         token_hash CHAR(64) NOT NULL COMMENT 'API Token SHA-256哈希，禁止存明文',
-                        token_ciphertext TEXT NULL COMMENT 'API Token加密备份，使用ADAPTER_API_TOKEN_ENCRYPTION_KEY加密',
-                        token_last4 VARCHAR(16) NULL COMMENT 'API Token末尾4位，用于人工核对',
+                        token_plaintext TEXT NULL COMMENT 'API Token原始明文，按用户要求保存，禁止打印到日志',
                         scopes TEXT NULL COMMENT '权限范围，逗号分隔，例如 workflow:read,workflow:write',
                         enabled TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否启用：1启用，0停用',
                         expires_at TIMESTAMP NULL COMMENT '过期时间，空表示不过期',
@@ -420,10 +416,10 @@ def _ensure_comments(cursor) -> None:
         "ALTER TABLE adapter_audit MODIFY elapsed_ms INT NULL COMMENT '耗时毫秒'",
         "ALTER TABLE adapter_audit MODIFY payload_json JSON NULL COMMENT '安全审计载荷JSON'",
         "ALTER TABLE adapter_api_client COMMENT='Adapter API调用方Token表'",
-        "ALTER TABLE adapter_api_client ADD COLUMN token_ciphertext TEXT NULL COMMENT 'API Token加密备份，使用ADAPTER_API_TOKEN_ENCRYPTION_KEY加密' AFTER token_hash",
-        "ALTER TABLE adapter_api_client MODIFY token_ciphertext TEXT NULL COMMENT 'API Token加密备份，使用ADAPTER_API_TOKEN_ENCRYPTION_KEY加密'",
-        "ALTER TABLE adapter_api_client ADD COLUMN token_last4 VARCHAR(16) NULL COMMENT 'API Token末尾4位，用于人工核对' AFTER token_ciphertext",
-        "ALTER TABLE adapter_api_client MODIFY token_last4 VARCHAR(16) NULL COMMENT 'API Token末尾4位，用于人工核对'",
+        "ALTER TABLE adapter_api_client ADD COLUMN token_plaintext TEXT NULL COMMENT 'API Token原始明文，按用户要求保存，禁止打印到日志' AFTER token_hash",
+        "ALTER TABLE adapter_api_client MODIFY token_plaintext TEXT NULL COMMENT 'API Token原始明文，按用户要求保存，禁止打印到日志'",
+        "ALTER TABLE adapter_api_client DROP COLUMN token_ciphertext",
+        "ALTER TABLE adapter_api_client DROP COLUMN token_last4",
         "ALTER TABLE adapter_apifox_project_config COMMENT='Adapter Apifox项目映射配置表'",
         "ALTER TABLE adapter_apifox_project_config MODIFY id BIGINT NOT NULL AUTO_INCREMENT COMMENT '自增主键'",
         "ALTER TABLE adapter_apifox_project_config MODIFY project_name VARCHAR(128) NOT NULL COMMENT '项目名称，例如 jdb-order'",
@@ -646,43 +642,6 @@ def dumps(value: Any) -> str:
 def hash_api_token(token: str) -> str:
     """计算 Adapter API token 的存储哈希。"""
     return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
-
-
-def encrypt_api_token(token: str) -> str | None:
-    """加密 Adapter API token；未配置密钥时不保存可恢复备份。"""
-    token_text = str(token or "").strip()
-    cipher = _api_token_cipher()
-    if not token_text or not cipher:
-        return None
-    return cipher.encrypt(token_text.encode("utf-8")).decode("utf-8")
-
-
-def decrypt_api_token(ciphertext: str) -> str | None:
-    """解密 Adapter API token 备份。"""
-    ciphertext_text = str(ciphertext or "").strip()
-    if not ciphertext_text:
-        return None
-    cipher = _api_token_cipher()
-    if not cipher:
-        raise ValueError("ADAPTER_API_TOKEN_ENCRYPTION_KEY is not configured")
-    return cipher.decrypt(ciphertext_text.encode("utf-8")).decode("utf-8")
-
-
-def api_token_last4(token: str) -> str | None:
-    """返回 Adapter API token 末尾4位，用于人工核对。"""
-    token_text = str(token or "").strip()
-    if not token_text:
-        return None
-    return token_text[-4:]
-
-
-def _api_token_cipher() -> Fernet | None:
-    """创建 Adapter API token 加密器。"""
-    key = os.getenv("ADAPTER_API_TOKEN_ENCRYPTION_KEY")
-    if not key:
-        return None
-    key_bytes = hashlib.sha256(key.encode("utf-8")).digest()
-    return Fernet(base64.urlsafe_b64encode(key_bytes))
 
 
 def find_api_client_by_token(token: str) -> dict[str, Any] | None:

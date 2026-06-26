@@ -9,7 +9,7 @@ Prefer environment variables so tokens do not land in shell history:
     --scopes workflow:read,workflow:write \
     --created-by 姬志猛
 
-The script stores SHA-256 token hashes, optional encrypted token backups, and
+The script stores SHA-256 token hashes and the original token in MySQL, but
 never prints the token.
 """
 
@@ -52,8 +52,6 @@ def main() -> None:
         raise SystemExit("Adapter API client token is missing")
 
     db.ensure_schema()
-    token_ciphertext = db.encrypt_api_token(token)
-    token_last4 = db.api_token_last4(token)
     with db.connect() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -62,20 +60,18 @@ def main() -> None:
                     client_id,
                     client_name,
                     token_hash,
-                    token_ciphertext,
-                    token_last4,
+                    token_plaintext,
                     scopes,
                     enabled,
                     expires_at,
                     created_by,
                     remark
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     client_name = VALUES(client_name),
                     token_hash = VALUES(token_hash),
-                    token_ciphertext = VALUES(token_ciphertext),
-                    token_last4 = VALUES(token_last4),
+                    token_plaintext = VALUES(token_plaintext),
                     scopes = VALUES(scopes),
                     enabled = VALUES(enabled),
                     expires_at = VALUES(expires_at),
@@ -86,8 +82,7 @@ def main() -> None:
                     args.client_id,
                     args.client_name,
                     db.hash_api_token(token),
-                    token_ciphertext,
-                    token_last4,
+                    token,
                     args.scopes or None,
                     int(args.enabled),
                     args.expires_at or None,
