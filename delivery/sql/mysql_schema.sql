@@ -48,9 +48,24 @@ CREATE TABLE IF NOT EXISTS adapter_api_client (
     KEY idx_adapter_api_client_expires_at (expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter API调用方Token表';
 
+CREATE TABLE IF NOT EXISTS adapter_apifox_account_config (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
+    account_name VARCHAR(128) NOT NULL COMMENT 'Apifox账号配置名称，例如 apifox-main',
+    access_token TEXT NOT NULL COMMENT 'Apifox Access Token，禁止打印到日志',
+    enabled TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否启用：1启用，0停用',
+    remark VARCHAR(512) NULL COMMENT '备注',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY uk_adapter_apifox_account_name (account_name),
+    KEY idx_adapter_apifox_account_enabled (enabled)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter Apifox账号Token配置表';
+
 CREATE TABLE IF NOT EXISTS adapter_apifox_project_config (
     id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
     project_name VARCHAR(128) NOT NULL COMMENT '项目名称，例如 jdb-order',
+    account_name VARCHAR(128) NULL COMMENT 'Apifox账号配置名称，关联adapter_apifox_account_config.account_name',
+    account_config_id BIGINT NULL COMMENT 'Apifox账号配置主键ID，关联adapter_apifox_account_config.id',
     apifox_project_id VARCHAR(64) NOT NULL COMMENT 'Apifox项目ID',
     openapi_url VARCHAR(2048) NULL COMMENT '项目专属OpenAPI地址',
     remark VARCHAR(512) NULL COMMENT '备注',
@@ -58,6 +73,8 @@ CREATE TABLE IF NOT EXISTS adapter_apifox_project_config (
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     UNIQUE KEY uk_adapter_apifox_project_name (project_name),
+    KEY idx_adapter_apifox_project_account_config_id (account_config_id),
+    KEY idx_adapter_apifox_project_account_name (account_name),
     KEY idx_adapter_apifox_project_id (apifox_project_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter Apifox项目映射配置表';
 

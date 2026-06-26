@@ -121,9 +121,27 @@ def ensure_schema() -> None:
                 )
                 cursor.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS adapter_apifox_account_config (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
+                        account_name VARCHAR(128) NOT NULL COMMENT 'Apifox账号配置名称，例如 apifox-main',
+                        access_token TEXT NOT NULL COMMENT 'Apifox Access Token，禁止打印到日志',
+                        enabled TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否启用：1启用，0停用',
+                        remark VARCHAR(512) NULL COMMENT '备注',
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                        UNIQUE KEY uk_adapter_apifox_account_name (account_name),
+                        KEY idx_adapter_apifox_account_enabled (enabled)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter Apifox账号Token配置表'
+                    """
+                )
+                cursor.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS adapter_apifox_project_config (
                         id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
                         project_name VARCHAR(128) NOT NULL COMMENT '项目名称，例如 jdb-order',
+                        account_name VARCHAR(128) NULL COMMENT 'Apifox账号配置名称，关联adapter_apifox_account_config.account_name',
+                        account_config_id BIGINT NULL COMMENT 'Apifox账号配置主键ID，关联adapter_apifox_account_config.id',
                         apifox_project_id VARCHAR(64) NOT NULL COMMENT 'Apifox项目ID',
                         openapi_url VARCHAR(2048) NULL COMMENT '项目专属OpenAPI地址',
                         remark VARCHAR(512) NULL COMMENT '备注',
@@ -131,6 +149,8 @@ def ensure_schema() -> None:
                         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                             ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
                         UNIQUE KEY uk_adapter_apifox_project_name (project_name),
+                        KEY idx_adapter_apifox_project_account_config_id (account_config_id),
+                        KEY idx_adapter_apifox_project_account_name (account_name),
                         KEY idx_adapter_apifox_project_id (apifox_project_id)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter Apifox项目映射配置表'
                     """
@@ -410,9 +430,23 @@ def _ensure_comments(cursor) -> None:
         "ALTER TABLE adapter_api_client MODIFY token_plaintext TEXT NULL COMMENT 'API Token原始明文，按用户要求保存，禁止打印到日志'",
         "ALTER TABLE adapter_api_client DROP COLUMN token_ciphertext",
         "ALTER TABLE adapter_api_client DROP COLUMN token_last4",
+        "ALTER TABLE adapter_apifox_account_config COMMENT='Adapter Apifox账号Token配置表'",
+        "ALTER TABLE adapter_apifox_account_config MODIFY id BIGINT NOT NULL AUTO_INCREMENT COMMENT '自增主键'",
+        "ALTER TABLE adapter_apifox_account_config MODIFY account_name VARCHAR(128) NOT NULL COMMENT 'Apifox账号配置名称，例如 apifox-main'",
+        "ALTER TABLE adapter_apifox_account_config MODIFY access_token TEXT NOT NULL COMMENT 'Apifox Access Token，禁止打印到日志'",
+        "ALTER TABLE adapter_apifox_account_config MODIFY enabled TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否启用：1启用，0停用'",
+        "ALTER TABLE adapter_apifox_account_config MODIFY remark VARCHAR(512) NULL COMMENT '备注'",
+        "ALTER TABLE adapter_apifox_account_config MODIFY created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'",
+        "ALTER TABLE adapter_apifox_account_config MODIFY updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'",
         "ALTER TABLE adapter_apifox_project_config COMMENT='Adapter Apifox项目映射配置表'",
         "ALTER TABLE adapter_apifox_project_config MODIFY id BIGINT NOT NULL AUTO_INCREMENT COMMENT '自增主键'",
         "ALTER TABLE adapter_apifox_project_config MODIFY project_name VARCHAR(128) NOT NULL COMMENT '项目名称，例如 jdb-order'",
+        "ALTER TABLE adapter_apifox_project_config ADD COLUMN account_name VARCHAR(128) NULL COMMENT 'Apifox账号配置名称，关联adapter_apifox_account_config.account_name' AFTER project_name",
+        "ALTER TABLE adapter_apifox_project_config MODIFY account_name VARCHAR(128) NULL COMMENT 'Apifox账号配置名称，关联adapter_apifox_account_config.account_name'",
+        "ALTER TABLE adapter_apifox_project_config ADD COLUMN account_config_id BIGINT NULL COMMENT 'Apifox账号配置主键ID，关联adapter_apifox_account_config.id' AFTER account_name",
+        "ALTER TABLE adapter_apifox_project_config MODIFY account_config_id BIGINT NULL COMMENT 'Apifox账号配置主键ID，关联adapter_apifox_account_config.id'",
+        "ALTER TABLE adapter_apifox_project_config ADD INDEX idx_adapter_apifox_project_account_config_id (account_config_id)",
+        "ALTER TABLE adapter_apifox_project_config ADD INDEX idx_adapter_apifox_project_account_name (account_name)",
         "ALTER TABLE adapter_apifox_project_config MODIFY apifox_project_id VARCHAR(64) NOT NULL COMMENT 'Apifox项目ID'",
         "ALTER TABLE adapter_apifox_project_config ADD COLUMN openapi_url VARCHAR(2048) NULL COMMENT '项目专属OpenAPI地址' AFTER apifox_project_id",
         "ALTER TABLE adapter_apifox_project_config MODIFY openapi_url VARCHAR(2048) NULL COMMENT '项目专属OpenAPI地址'",
@@ -503,6 +537,15 @@ def _backfill_config_relation_ids(cursor) -> None:
         SET rel.member_id = member.id
         WHERE rel.member_id IS NULL
            OR rel.member_id <> member.id
+        """,
+        """
+        UPDATE adapter_apifox_project_config project
+        JOIN adapter_apifox_account_config account
+          ON LOWER(account.account_name) = LOWER(project.account_name)
+        SET project.account_config_id = account.id
+        WHERE project.account_name IS NOT NULL
+          AND (project.account_config_id IS NULL
+           OR project.account_config_id <> account.id)
         """,
         """
         UPDATE adapter_apifox_pipeline_config pipeline
@@ -1476,9 +1519,28 @@ def find_apifox_project_config(project_name: str) -> dict[str, Any] | None:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT id, project_name, apifox_project_id, openapi_url, remark
-                    FROM adapter_apifox_project_config
-                    WHERE LOWER(project_name) = LOWER(%s)
+                    SELECT
+                        project.id,
+                        project.project_name,
+                        project.account_name,
+                        project.account_config_id,
+                        account.access_token,
+                        account.enabled AS account_enabled,
+                        project.apifox_project_id,
+                        project.openapi_url,
+                        project.remark
+                    FROM adapter_apifox_project_config project
+                    LEFT JOIN adapter_apifox_account_config account
+                      ON (
+                            project.account_config_id IS NOT NULL
+                        AND account.id = project.account_config_id
+                       )
+                       OR (
+                            project.account_config_id IS NULL
+                        AND project.account_name IS NOT NULL
+                        AND LOWER(account.account_name) = LOWER(project.account_name)
+                       )
+                    WHERE LOWER(project.project_name) = LOWER(%s)
                     LIMIT 1
                     """,
                     (project_name,),
@@ -1489,6 +1551,9 @@ def find_apifox_project_config(project_name: str) -> dict[str, Any] | None:
         return {
             "projectName": row.get("project_name"),
             "apifoxProjectConfigId": row.get("id"),
+            "accountName": row.get("account_name"),
+            "accountConfigId": row.get("account_config_id"),
+            "accessToken": row.get("access_token") if row.get("account_enabled") in (1, True) else None,
             "apifoxProjectId": row.get("apifox_project_id"),
             "openapiUrl": row.get("openapi_url"),
             "remark": row.get("remark"),
@@ -1537,7 +1602,7 @@ def list_apifox_project_configs() -> list[dict[str, Any]]:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT id, project_name, apifox_project_id, openapi_url, remark
+                    SELECT id, project_name, account_name, account_config_id, apifox_project_id, openapi_url, remark
                     FROM adapter_apifox_project_config
                     ORDER BY project_name
                     """
@@ -1547,6 +1612,8 @@ def list_apifox_project_configs() -> list[dict[str, Any]]:
             {
                 "projectName": row.get("project_name"),
                 "apifoxProjectConfigId": row.get("id"),
+                "accountName": row.get("account_name"),
+                "accountConfigId": row.get("account_config_id"),
                 "apifoxProjectId": row.get("apifox_project_id"),
                 "openapiUrl": row.get("openapi_url"),
                 "remark": row.get("remark"),
@@ -1594,6 +1661,7 @@ def _find_id_by_name(cursor, *, table: str, name_column: str, name_value: str | 
         return None
     if table not in {
         "adapter_apifox_project_config",
+        "adapter_apifox_account_config",
         "adapter_yunxiao_account_config",
         "adapter_yunxiao_project_config",
         "adapter_yunxiao_member",

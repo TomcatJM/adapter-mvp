@@ -139,6 +139,54 @@ class ApifoxProjectResolutionTest(unittest.TestCase):
         self.assertEqual(result["projectConfigSource"], "database")
         self.assertEqual(result["upstreamOpenapiUrl"], "http://40.example.test:18080/openapi.json")
 
+    def test_db_project_account_token_overrides_environment_token(self) -> None:
+        payload = {
+            "task": {"pipelineId": "4437990", "statusCode": "SUCCESS"},
+            "sources": [],
+            "globalParams": [{"key": "PROJECT_NAME", "value": "adapter-mvp"}],
+        }
+        project_config = {
+            "projectName": "adapter-mvp",
+            "accountName": "apifox-main",
+            "accessToken": "db-token-for-test",
+            "apifoxProjectId": "8460173",
+            "openapiUrl": "http://40.example.test:18080/openapi.json",
+        }
+
+        with patch("app.apifox._find_project_config", return_value=project_config), patch(
+            "app.apifox._preflight_openapi", return_value={"ok": True, "pathCount": 1}
+        ), patch("app.apifox._import_openapi", return_value={"statusCode": 201}) as import_openapi:
+            result = maybe_import_from_flow_event(payload)
+
+        import_openapi.assert_called_once()
+        self.assertTrue(result["imported"])
+        self.assertEqual(result["accessTokenSource"], "database_account")
+        self.assertNotIn("accessToken", result)
+        self.assertEqual(import_openapi.call_args.args[0]["accessToken"], "db-token-for-test")
+
+    def test_missing_apifox_token_reports_account_config_hint(self) -> None:
+        os.environ.pop("APIFOX_ACCESS_TOKEN", None)
+        payload = {
+            "task": {"pipelineId": "4437990", "statusCode": "SUCCESS"},
+            "sources": [],
+            "globalParams": [{"key": "PROJECT_NAME", "value": "adapter-mvp"}],
+        }
+        project_config = {
+            "projectName": "adapter-mvp",
+            "apifoxProjectId": "8460173",
+            "openapiUrl": "http://40.example.test:18080/openapi.json",
+        }
+
+        with patch("app.apifox._find_project_config", return_value=project_config), patch(
+            "app.apifox._import_openapi"
+        ) as import_openapi:
+            result = maybe_import_from_flow_event(payload)
+
+        import_openapi.assert_not_called()
+        self.assertFalse(result["imported"])
+        self.assertEqual(result["accessTokenSource"], "unresolved")
+        self.assertIn("adapter_apifox_account_config", result["reason"])
+
     def test_payload_openapi_url_overrides_db_project_openapi_url(self) -> None:
         os.environ["ADAPTER_API_TOKEN"] = "adapter-token-for-signing"
         os.environ["ADAPTER_PUBLIC_BASE_URL"] = "http://adapter.example.test"

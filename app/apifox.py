@@ -100,6 +100,8 @@ def _resolve_config(payload: dict[str, Any]) -> dict[str, Any]:
         project_name_remark = None
     project_key = _normalize_key(project_name)
     project_config = _find_project_config(project_name) if project_name else None
+    db_access_token = (project_config or {}).get("accessToken")
+    env_access_token = os.getenv("APIFOX_ACCESS_TOKEN")
     project_id = (
         _pick(params, "APIFOX_PROJECT_ID")
         or (project_config or {}).get("apifoxProjectId")
@@ -137,7 +139,8 @@ def _resolve_config(payload: dict[str, Any]) -> dict[str, Any]:
         "baseUrl": os.getenv("APIFOX_BASE_URL", "https://api.apifox.com"),
         "apiVersion": os.getenv("APIFOX_API_VERSION", "2024-03-28"),
         "locale": os.getenv("APIFOX_LOCALE", "zh-CN"),
-        "accessToken": os.getenv("APIFOX_ACCESS_TOKEN"),
+        "accessToken": db_access_token or env_access_token,
+        "accessTokenSource": "database_account" if db_access_token else ("environment" if env_access_token else "unresolved"),
         "endpointOverwriteBehavior": os.getenv("APIFOX_ENDPOINT_OVERWRITE_BEHAVIOR", "OVERWRITE_EXISTING"),
         "schemaOverwriteBehavior": os.getenv("APIFOX_SCHEMA_OVERWRITE_BEHAVIOR", "KEEP_EXISTING"),
     }
@@ -379,6 +382,8 @@ def _missing_config_reason(config: dict[str, Any], missing: list[str]) -> str:
             f"(source={config['projectNameSource']}); configure adapter_apifox_project_config, "
             f"APIFOX_PROJECT_{config['projectKey']}_ID, or pass APIFOX_PROJECT_ID explicitly."
         )
+    if missing == ["accessToken"]:
+        return "missing Apifox access token; configure adapter_apifox_account_config or APIFOX_ACCESS_TOKEN."
     return f"missing {','.join(missing)}"
 
 
