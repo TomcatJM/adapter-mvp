@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from contextlib import contextmanager
@@ -92,6 +93,29 @@ def ensure_schema() -> None:
                         KEY idx_adapter_audit_task_id (task_id),
                         KEY idx_adapter_audit_ts (ts)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter审计日志表'
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS adapter_api_client (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
+                        client_id VARCHAR(128) NOT NULL COMMENT '调用方ID，例如 codex、yunxiao-flow',
+                        client_name VARCHAR(128) NOT NULL COMMENT '调用方名称',
+                        token_hash CHAR(64) NOT NULL COMMENT 'API Token SHA-256哈希，禁止存明文',
+                        scopes TEXT NULL COMMENT '权限范围，逗号分隔，例如 workflow:read,workflow:write',
+                        enabled TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否启用：1启用，0停用',
+                        expires_at TIMESTAMP NULL COMMENT '过期时间，空表示不过期',
+                        last_used_at TIMESTAMP NULL COMMENT '最近使用时间',
+                        created_by VARCHAR(128) NULL COMMENT '创建人',
+                        remark VARCHAR(512) NULL COMMENT '备注',
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                        UNIQUE KEY uk_adapter_api_client_id (client_id),
+                        UNIQUE KEY uk_adapter_api_client_token_hash (token_hash),
+                        KEY idx_adapter_api_client_enabled (enabled),
+                        KEY idx_adapter_api_client_expires_at (expires_at)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter API调用方Token表'
                     """
                 )
                 cursor.execute(
@@ -607,6 +631,61 @@ def _migrate_dingtalk_app_config(cursor) -> None:
 def dumps(value: Any) -> str:
     """dumps。"""
     return json.dumps(value or {}, ensure_ascii=False, separators=(",", ":"))
+
+
+def hash_api_token(token: str) -> str:
+    """计算 Adapter API token 的存储哈希。"""
+    return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+
+
+def find_api_client_by_token(token: str) -> dict[str, Any] | None:
+    """按明文 token 查找启用的 Adapter API 调用方。"""
+    token_text = str(token or "").strip()
+    if not token_text or not configured():
+        return None
+    ensure_schema()
+    token_hash = hash_api_token(token_text)
+    with connect() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    client_id,
+                    client_name,
+                    scopes,
+                    created_by,
+                    remark
+                FROM adapter_api_client
+                WHERE token_hash = %s
+                  AND enabled = 1
+                  AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+                LIMIT 1
+                """,
+                (token_hash,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            cursor.execute(
+                """
+                UPDATE adapter_api_client
+                SET last_used_at = CURRENT_TIMESTAMP
+                WHERE client_id = %s
+                """,
+                (row["client_id"],),
+            )
+    return {
+        "clientId": row.get("client_id"),
+        "clientName": row.get("client_name"),
+        "scopes": _split_scopes(row.get("scopes")),
+        "createdBy": row.get("created_by"),
+        "remark": row.get("remark"),
+    }
+
+
+def _split_scopes(value: Any) -> list[str]:
+    """拆分 API 调用方权限范围。"""
+    return [item.strip() for item in str(value or "").split(",") if item.strip()]
 
 
 def create_workflow_instance(
