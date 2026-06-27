@@ -532,6 +532,131 @@ class WorkflowP0Test(unittest.TestCase):
         self.assertEqual(demand["items"][1]["ownerName"], "张现龙")
         self.assertEqual(demand["items"][1]["contentLines"], ["列表增加展示此字段，字段为int，默认为0"])
 
+    def test_submit_requirement_backfills_task_owner_and_content_by_sequence_when_index_missing(self) -> None:
+        from app.models import WorkflowRequirementRequest
+        from app.workflow import submit_requirement
+
+        workflow = {
+            "workflowId": "wf-test-sequence-owner",
+            "status": "DOC_READ",
+            "context": {
+                "dingtalk": {
+                    "read": {
+                        "document": {
+                            "result": {
+                                "data": [
+                                    {"blockType": "paragraph", "paragraph": {"text": "项目名：02-园务系统"}},
+                                    {"blockType": "heading", "heading": {"text": "需求一：", "level": "heading-4"}},
+                                    {
+                                        "blockType": "heading",
+                                        "heading": {"text": "跟进记录增加字段是否为测试", "level": "heading-5"},
+                                    },
+                                    {"blockType": "paragraph", "paragraph": {"text": "负责人：陈惠龙"}},
+                                    {"blockType": "paragraph", "paragraph": {"text": "主要内容"}},
+                                    {
+                                        "blockType": "paragraph",
+                                        "paragraph": {"text": "跟进记录增加字段是否为测试，字段为int，默认为0"},
+                                    },
+                                    {"blockType": "heading", "heading": {"text": "", "level": "heading-5"}},
+                                    {
+                                        "blockType": "heading",
+                                        "heading": {"text": "列表增加展示此字段", "level": "heading-5"},
+                                    },
+                                    {"blockType": "paragraph", "paragraph": {"text": "负责人：张现龙"}},
+                                    {"blockType": "paragraph", "paragraph": {"text": "主要内容："}},
+                                    {
+                                        "blockType": "paragraph",
+                                        "paragraph": {"text": "列表增加展示此字段，字段为int，默认为0"},
+                                    },
+                                ]
+                            }
+                        }
+                    }
+                }
+            },
+        }
+
+        def fake_update(**kwargs):
+            return {**workflow, "status": "REQUIREMENT_PARSED", "context": kwargs["context"]}
+
+        with patch("app.workflow.db.find_workflow_instance", return_value=workflow), patch(
+            "app.workflow.db.find_yunxiao_project_config",
+            return_value={"projectName": "02-园务系统", "projectConfigId": 2},
+        ), patch("app.workflow.db.update_workflow_requirement", side_effect=fake_update):
+            result = submit_requirement(
+                "wf-test-sequence-owner",
+                WorkflowRequirementRequest(
+                    documentTitle="需求模版.adoc",
+                    version="V1.0.0",
+                    demands=[
+                        {
+                            "title": "跟进记录增加字段是否为测试",
+                            "description": "跟进记录增加字段是否为测试，列表增加展示此字段",
+                            "items": [
+                                {"title": "跟进记录增加字段是否为测试"},
+                                {"title": "跟进记录列表展示是否为测试字段"},
+                            ],
+                        }
+                    ],
+                ),
+            )
+
+        demand = result["workflow"]["context"]["requirement"]["demands"][0]
+        self.assertEqual(demand["items"][0]["ownerName"], "陈惠龙")
+        self.assertEqual(demand["items"][1]["ownerName"], "张现龙")
+        self.assertEqual(demand["items"][1]["contentLines"], ["列表增加展示此字段，字段为int，默认为0"])
+
+    def test_submit_requirement_does_not_backfill_by_sequence_when_task_count_differs(self) -> None:
+        from app.models import WorkflowRequirementRequest
+        from app.workflow import submit_requirement
+
+        workflow = {
+            "workflowId": "wf-test-sequence-count-mismatch",
+            "status": "DOC_READ",
+            "context": {
+                "dingtalk": {
+                    "read": {
+                        "document": {
+                            "result": {
+                                "data": [
+                                    {"blockType": "paragraph", "paragraph": {"text": "项目名：02-园务系统"}},
+                                    {"blockType": "heading", "heading": {"text": "需求一：", "level": "heading-4"}},
+                                    {"blockType": "heading", "heading": {"text": "任务一", "level": "heading-5"}},
+                                    {"blockType": "paragraph", "paragraph": {"text": "负责人：陈惠龙"}},
+                                    {"blockType": "heading", "heading": {"text": "任务二", "level": "heading-5"}},
+                                    {"blockType": "paragraph", "paragraph": {"text": "负责人：张现龙"}},
+                                ]
+                            }
+                        }
+                    }
+                }
+            },
+        }
+
+        def fake_update(**kwargs):
+            return {**workflow, "status": "REQUIREMENT_PARSED", "context": kwargs["context"]}
+
+        with patch("app.workflow.db.find_workflow_instance", return_value=workflow), patch(
+            "app.workflow.db.find_yunxiao_project_config",
+            return_value={"projectName": "02-园务系统", "projectConfigId": 2},
+        ), patch("app.workflow.db.update_workflow_requirement", side_effect=fake_update):
+            result = submit_requirement(
+                "wf-test-sequence-count-mismatch",
+                WorkflowRequirementRequest(
+                    documentTitle="需求模版.adoc",
+                    version="V1.0.0",
+                    demands=[
+                        {
+                            "title": "需求一",
+                            "items": [{"title": "标题被改写且缺少 itemIndex"}],
+                        }
+                    ],
+                ),
+            )
+
+        item = result["workflow"]["context"]["requirement"]["demands"][0]["items"][0]
+        self.assertFalse(item["ownerName"])
+
     def test_submit_requirement_rejects_when_structured_project_differs_from_dingtalk_read(self) -> None:
         from app.models import WorkflowRequirementRequest
         from app.workflow import WorkflowError, submit_requirement

@@ -278,17 +278,29 @@ def _apply_trusted_dingtalk_owner_names(workflow: dict[str, Any], demands: list[
     """从钉钉原文回填任务负责人，避免结构化漏掉 ownerName 后落到默认负责人。"""
     task_owners = _trusted_dingtalk_task_owners(workflow)
     task_owners_by_position = _trusted_dingtalk_task_owners_by_position(workflow)
-    if not task_owners and not task_owners_by_position:
+    task_owners_by_sequence = _trusted_dingtalk_task_owners_by_sequence(workflow)
+    task_counts_by_sequence = _trusted_dingtalk_task_counts_by_demand_sequence(workflow)
+    if not task_owners and not task_owners_by_position and not task_owners_by_sequence:
         return demands
     normalized_demands: list[dict[str, Any]] = []
-    for demand in demands:
+    can_match_by_sequence = len(demands) == len(task_counts_by_sequence)
+    for demand_position, demand in enumerate(demands, 1):
         copied_demand = dict(demand)
+        source_items = demand.get("items") or []
+        can_match_demand_by_sequence = can_match_by_sequence and len(source_items) == task_counts_by_sequence.get(
+            _clean_text(demand_position), 0
+        )
         items: list[dict[str, Any]] = []
-        for item in demand.get("items") or []:
+        for item_position, item in enumerate(source_items, 1):
             copied_item = dict(item)
             title = _clean_text(copied_item.get("title"))
             position_key = _task_position_key(copied_demand.get("demandIndex"), copied_item.get("itemIndex"))
-            trusted_owner = task_owners.get(_normalize_project_name(title)) or task_owners_by_position.get(position_key)
+            sequence_key = _task_position_key(demand_position, item_position)
+            trusted_owner = (
+                task_owners.get(_normalize_project_name(title))
+                or task_owners_by_position.get(position_key)
+                or (task_owners_by_sequence.get(sequence_key) if can_match_demand_by_sequence else None)
+            )
             submitted_owner = _clean_text(copied_item.get("ownerName"))
             if trusted_owner and submitted_owner:
                 if _normalize_project_name(trusted_owner) != _normalize_project_name(submitted_owner):
@@ -311,18 +323,28 @@ def _apply_trusted_dingtalk_task_content_lines(
     """从钉钉原文回填任务主要内容，避免任务描述显示为未提供。"""
     task_content_lines = _trusted_dingtalk_task_content_lines(workflow)
     task_content_lines_by_position = _trusted_dingtalk_task_content_lines_by_position(workflow)
-    if not task_content_lines and not task_content_lines_by_position:
+    task_content_lines_by_sequence = _trusted_dingtalk_task_content_lines_by_sequence(workflow)
+    task_counts_by_sequence = _trusted_dingtalk_task_counts_by_demand_sequence(workflow)
+    if not task_content_lines and not task_content_lines_by_position and not task_content_lines_by_sequence:
         return demands
     normalized_demands: list[dict[str, Any]] = []
-    for demand in demands:
+    can_match_by_sequence = len(demands) == len(task_counts_by_sequence)
+    for demand_position, demand in enumerate(demands, 1):
         copied_demand = dict(demand)
+        source_items = demand.get("items") or []
+        can_match_demand_by_sequence = can_match_by_sequence and len(source_items) == task_counts_by_sequence.get(
+            _clean_text(demand_position), 0
+        )
         items: list[dict[str, Any]] = []
-        for item in demand.get("items") or []:
+        for item_position, item in enumerate(source_items, 1):
             copied_item = dict(item)
             title = _clean_text(copied_item.get("title"))
             position_key = _task_position_key(copied_demand.get("demandIndex"), copied_item.get("itemIndex"))
-            trusted_lines = task_content_lines.get(_normalize_project_name(title)) or task_content_lines_by_position.get(
-                position_key
+            sequence_key = _task_position_key(demand_position, item_position)
+            trusted_lines = (
+                task_content_lines.get(_normalize_project_name(title))
+                or task_content_lines_by_position.get(position_key)
+                or (task_content_lines_by_sequence.get(sequence_key) if can_match_demand_by_sequence else None)
             )
             if trusted_lines:
                 copied_item["contentLines"] = trusted_lines
@@ -350,6 +372,15 @@ def _trusted_dingtalk_task_owners_by_position(workflow: dict[str, Any]) -> dict[
     }
 
 
+def _trusted_dingtalk_task_owners_by_sequence(workflow: dict[str, Any]) -> dict[str, str]:
+    """从 Adapter 已读取的钉钉原文中按需求顺序和任务顺序提取负责人。"""
+    return {
+        _task_position_key(record.get("demandSequence"), record.get("itemSequence")): record["ownerName"]
+        for record in _trusted_dingtalk_task_records(workflow)
+        if record.get("ownerName")
+    }
+
+
 def _trusted_dingtalk_task_content_lines(workflow: dict[str, Any]) -> dict[str, list[str]]:
     """从 Adapter 已读取的钉钉原文中提取任务标题到主要内容的映射。"""
     return {
@@ -366,6 +397,25 @@ def _trusted_dingtalk_task_content_lines_by_position(workflow: dict[str, Any]) -
         for record in _trusted_dingtalk_task_records(workflow)
         if record.get("contentLines")
     }
+
+
+def _trusted_dingtalk_task_content_lines_by_sequence(workflow: dict[str, Any]) -> dict[str, list[str]]:
+    """从 Adapter 已读取的钉钉原文中按需求顺序和任务顺序提取主要内容。"""
+    return {
+        _task_position_key(record.get("demandSequence"), record.get("itemSequence")): record["contentLines"]
+        for record in _trusted_dingtalk_task_records(workflow)
+        if record.get("contentLines")
+    }
+
+
+def _trusted_dingtalk_task_counts_by_demand_sequence(workflow: dict[str, Any]) -> dict[str, int]:
+    """统计 Adapter 已读取的每个需求顺序下有几个任务，用于限制顺序兜底匹配。"""
+    counts: dict[str, int] = {}
+    for record in _trusted_dingtalk_task_records(workflow):
+        demand_sequence = _clean_text(record.get("demandSequence"))
+        if demand_sequence:
+            counts[demand_sequence] = counts.get(demand_sequence, 0) + 1
+    return counts
 
 
 def _trusted_dingtalk_task_records(workflow: dict[str, Any]) -> list[dict[str, Any]]:
@@ -390,7 +440,9 @@ def _trusted_dingtalk_task_records(workflow: dict[str, Any]) -> list[dict[str, A
                 current_task_title = title
                 current_record = {
                     "demandIndex": current_demand_index or None,
+                    "demandSequence": current_demand_index or None,
                     "itemIndex": current_item_index,
+                    "itemSequence": current_item_index,
                     "title": title,
                     "ownerName": None,
                     "contentLines": [],
