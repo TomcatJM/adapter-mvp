@@ -591,11 +591,23 @@ def _workflow_project_candidates(workflow: dict[str, Any]) -> list[str]:
     """内部辅助函数：工作流项目candidates。"""
     context = workflow.get("context") or {}
     requirement = context.get("requirement") or {}
+    requirement_extra = requirement.get("extra") if isinstance(requirement.get("extra"), dict) else {}
     values: list[Any] = []
-    for source in (context, requirement):
+    for source in (context, requirement, requirement_extra):
         values.extend(
             source.get(key)
-            for key in ("projectName", "project_name", "serviceName", "service_name", "appName", "app_name")
+            for key in (
+                "projectName",
+                "project_name",
+                "sourceProjectName",
+                "source_project_name",
+                "documentProjectName",
+                "document_project_name",
+                "serviceName",
+                "service_name",
+                "appName",
+                "app_name",
+            )
         )
     values.append(_first_item(requirement.get("affectedRepos")))
     values.append(_repo_name(workflow.get("repoUrl") or requirement.get("repoUrl")))

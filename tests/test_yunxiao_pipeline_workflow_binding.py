@@ -757,6 +757,65 @@ class YunxiaoPipelineWorkflowBindingTest(unittest.TestCase):
         self.assertEqual(result["workflow"]["reason"], "workflow match ambiguous")
         self.assertEqual(result["apifox"]["reason"], "workflow match ambiguous")
 
+    def test_success_binds_project_active_workflow_by_requirement_extra_project_alias(self) -> None:
+        from app.models import YunxiaoPipelineFailureCallback
+        from app.yunxiao_pipeline import handle_pipeline_success
+
+        workflow = {
+            "workflowId": "wf-garden-1",
+            "status": "CODE_SUBMITTED",
+            "context": {
+                "requirement": {
+                    "extra": {
+                        "documentProjectName": "园务",
+                        "sourceProjectName": "园务",
+                    }
+                }
+            },
+        }
+        pipeline_success = {**workflow, "status": "PIPELINE_SUCCESS"}
+        apifox_result = {"enabled": True, "imported": True, "projectId": "apifox-1", "reason": "Apifox import finished"}
+        callback = YunxiaoPipelineFailureCallback(
+            taskId="yx-flow-4744934-336",
+            pipelineId="4744934",
+            buildNumber="336",
+            stageName="release",
+            branchName="develop",
+            commitId="merge-commit",
+            commitMessage="Merge branch 'hotfix/0626' into develop",
+        )
+
+        with patch("app.yunxiao_pipeline.db.find_workflow_by_pipeline_build", return_value=None), patch(
+            "app.yunxiao_pipeline.db.find_workflow_by_branch_commit", return_value=None
+        ), patch(
+            "app.yunxiao_pipeline.db.find_apifox_pipeline_config",
+            return_value={"pipelineId": "4744934", "projectName": "园CRM"},
+        ), patch(
+            "app.yunxiao_pipeline.db.find_yunxiao_project_config",
+            return_value={"projectName": "园CRM", "organizationId": "org-1", "projectId": "garden-1"},
+        ), patch(
+            "app.yunxiao_pipeline.db.list_yunxiao_project_configs",
+            return_value=[
+                {"projectName": "园CRM", "organizationId": "org-1", "projectId": "garden-1"},
+                {"projectName": "园务", "organizationId": "org-1", "projectId": "garden-1"},
+            ],
+        ), patch(
+            "app.yunxiao_pipeline.db.list_workflows_by_statuses", return_value=[workflow]
+        ), patch(
+            "app.yunxiao_pipeline.db.update_workflow_pipeline_success", return_value=pipeline_success
+        ), patch(
+            "app.yunxiao_pipeline.maybe_import_from_flow_event", return_value=apifox_result
+        ), patch(
+            "app.yunxiao_pipeline.db.update_workflow_apifox_synced",
+            return_value={**pipeline_success, "status": "APIFOX_SYNCED", "apifoxProjectId": "apifox-1"},
+        ):
+            result = handle_pipeline_success({}, callback)
+
+        self.assertTrue(result["workflow"]["bound"])
+        self.assertEqual(result["workflow"]["bindingSource"], "project_active_workflow")
+        self.assertEqual(result["workflow"]["workflow"]["workflowId"], "wf-garden-1")
+        self.assertEqual(result["workflow"]["workflow"]["status"], "APIFOX_SYNCED")
+
     def test_success_with_unknown_workflow_id_does_not_import_apifox(self) -> None:
         from app.models import YunxiaoPipelineFailureCallback
         from app.yunxiao_pipeline import handle_pipeline_success
