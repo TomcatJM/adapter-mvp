@@ -164,6 +164,7 @@ def submit_requirement(workflow_id: str, request: WorkflowRequirementRequest) ->
         raise WorkflowError(f"Workflow status is not DOC_READ: {workflow['status']}")
     requirement_summary = _derive_requirement_summary(request)
     demands = [_normalize_requirement_demand(demand) for demand in request.demands]
+    demands = _apply_trusted_dingtalk_owner_names(workflow, demands)
     requirement = {
         "summary": requirement_summary,
         "documentTitle": _clean_text(request.document_title),
@@ -270,6 +271,74 @@ def _validate_document_project_name(workflow: dict[str, Any], requirement: dict[
             "nextAction": "请选择一个云效项目后继续",
         },
     }
+
+
+def _apply_trusted_dingtalk_owner_names(workflow: dict[str, Any], demands: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """从钉钉原文回填任务负责人，避免结构化漏掉 ownerName 后落到默认负责人。"""
+    task_owners = _trusted_dingtalk_task_owners(workflow)
+    if not task_owners:
+        return demands
+    normalized_demands: list[dict[str, Any]] = []
+    for demand in demands:
+        copied_demand = dict(demand)
+        items: list[dict[str, Any]] = []
+        for item in demand.get("items") or []:
+            copied_item = dict(item)
+            title = _clean_text(copied_item.get("title"))
+            trusted_owner = task_owners.get(_normalize_project_name(title))
+            submitted_owner = _clean_text(copied_item.get("ownerName"))
+            if trusted_owner and submitted_owner:
+                if _normalize_project_name(trusted_owner) != _normalize_project_name(submitted_owner):
+                    raise WorkflowError(
+                        "DingTalk task owner mismatch: "
+                        f"taskTitle={title}, readOwnerName={trusted_owner}, submittedOwnerName={submitted_owner}. "
+                        "Use the ownerName from the Adapter DingTalk read result."
+                    )
+            if trusted_owner and not submitted_owner:
+                copied_item["ownerName"] = trusted_owner
+            items.append(copied_item)
+        copied_demand["items"] = items
+        normalized_demands.append(copied_demand)
+    return normalized_demands
+
+
+def _trusted_dingtalk_task_owners(workflow: dict[str, Any]) -> dict[str, str]:
+    """从 Adapter 已读取的钉钉原文中提取任务标题到负责人的映射。"""
+    context = workflow.get("context") if isinstance(workflow.get("context"), dict) else {}
+    dingtalk = context.get("dingtalk") if isinstance(context.get("dingtalk"), dict) else {}
+    read = dingtalk.get("read") if isinstance(dingtalk.get("read"), dict) else {}
+    document = read.get("document") if isinstance(read.get("document"), dict) else {}
+    result = document.get("result") if isinstance(document.get("result"), dict) else {}
+    data = result.get("data") if isinstance(result.get("data"), list) else []
+    owners: dict[str, str] = {}
+    current_task_title = ""
+    for block in data:
+        if not isinstance(block, dict):
+            continue
+        heading = block.get("heading") if isinstance(block.get("heading"), dict) else {}
+        paragraph = block.get("paragraph") if isinstance(block.get("paragraph"), dict) else {}
+        if heading:
+            title = _clean_task_heading_text(heading.get("text"))
+            level = _clean_text(heading.get("level"))
+            if title and level in {"heading-5", "5"}:
+                current_task_title = title
+            elif level in {"heading-4", "4"}:
+                current_task_title = ""
+            continue
+        text = _clean_text(paragraph.get("text")) if paragraph else ""
+        if not current_task_title or not text:
+            continue
+        owner = _extract_labeled_value(text, "负责人")
+        if owner:
+            owners.setdefault(_normalize_project_name(current_task_title), owner)
+    return owners
+
+
+def _clean_task_heading_text(value: Any) -> str:
+    """清理钉钉任务标题中的序号。"""
+    text = _clean_text(value)
+    text = re.sub(r"^\s*\d+\s*[.．、]\s*", "", text)
+    return _clean_text(text.rstrip("：:"))
 
 
 def _resolve_project_selection(workflow: dict[str, Any], request: WorkflowResolveRequest) -> dict[str, Any]:

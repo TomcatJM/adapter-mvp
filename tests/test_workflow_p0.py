@@ -251,6 +251,69 @@ class WorkflowP0Test(unittest.TestCase):
         self.assertIn("targetStatus=PROJECT_SELECTED", result["nextAction"])
         update.assert_not_called()
 
+    def test_submit_requirement_backfills_task_owner_from_dingtalk_read(self) -> None:
+        from app.models import WorkflowRequirementRequest
+        from app.workflow import submit_requirement
+
+        workflow = {
+            "workflowId": "wf-test-owner",
+            "status": "DOC_READ",
+            "context": {
+                "dingtalk": {
+                    "read": {
+                        "document": {
+                            "result": {
+                                "data": [
+                                    {"blockType": "paragraph", "paragraph": {"text": "项目名：02-园务系统"}},
+                                    {"blockType": "heading", "heading": {"text": "需求一：", "level": "heading-4"}},
+                                    {
+                                        "blockType": "heading",
+                                        "heading": {"text": "1. 线索增加字段是否为测试", "level": "heading-5"},
+                                    },
+                                    {"blockType": "paragraph", "paragraph": {"text": "负责人：姬志猛"}},
+                                    {"blockType": "paragraph", "paragraph": {"text": "主要内容"}},
+                                    {
+                                        "blockType": "heading",
+                                        "heading": {"text": "2. 线索列表展示是否为测试字段", "level": "heading-5"},
+                                    },
+                                    {"blockType": "paragraph", "paragraph": {"text": "负责人：谢铭琪"}},
+                                ]
+                            }
+                        }
+                    }
+                }
+            },
+        }
+
+        def fake_update(**kwargs):
+            return {**workflow, "status": "REQUIREMENT_PARSED", "context": kwargs["context"]}
+
+        with patch("app.workflow.db.find_workflow_instance", return_value=workflow), patch(
+            "app.workflow.db.find_yunxiao_project_config",
+            return_value={"projectName": "02-园务系统", "projectConfigId": 2},
+        ), patch("app.workflow.db.update_workflow_requirement", side_effect=fake_update):
+            result = submit_requirement(
+                "wf-test-owner",
+                WorkflowRequirementRequest(
+                    documentTitle="需求模版.adoc",
+                    version="V1.0.0",
+                    demands=[
+                        {
+                            "demandIndex": 1,
+                            "title": "需求一",
+                            "items": [
+                                {"itemIndex": 1, "title": "线索增加字段是否为测试", "parentDemandTitle": "需求一"},
+                                {"itemIndex": 2, "title": "线索列表展示是否为测试字段", "parentDemandTitle": "需求一"},
+                            ],
+                        }
+                    ],
+                ),
+            )
+
+        items = result["workflow"]["context"]["requirement"]["demands"][0]["items"]
+        self.assertEqual(items[0]["ownerName"], "姬志猛")
+        self.assertEqual(items[1]["ownerName"], "谢铭琪")
+
     def test_submit_requirement_rejects_when_structured_project_differs_from_dingtalk_read(self) -> None:
         from app.models import WorkflowRequirementRequest
         from app.workflow import WorkflowError, submit_requirement
@@ -300,6 +363,63 @@ class WorkflowP0Test(unittest.TestCase):
         self.assertIn("projectName mismatch", message)
         self.assertIn("readProjectName=园务", message)
         self.assertIn("submittedProjectName=校务", message)
+        update.assert_not_called()
+
+    def test_submit_requirement_rejects_when_task_owner_differs_from_dingtalk_read(self) -> None:
+        from app.models import WorkflowRequirementRequest
+        from app.workflow import WorkflowError, submit_requirement
+
+        workflow = {
+            "workflowId": "wf-test-owner",
+            "status": "DOC_READ",
+            "context": {
+                "dingtalk": {
+                    "read": {
+                        "document": {
+                            "result": {
+                                "data": [
+                                    {"blockType": "paragraph", "paragraph": {"text": "项目名：02-园务系统"}},
+                                    {
+                                        "blockType": "heading",
+                                        "heading": {"text": "1. 线索列表展示是否为测试字段", "level": "heading-5"},
+                                    },
+                                    {"blockType": "paragraph", "paragraph": {"text": "负责人：谢铭琪"}},
+                                ]
+                            }
+                        }
+                    }
+                }
+            },
+        }
+
+        with patch("app.workflow.db.find_workflow_instance", return_value=workflow), patch(
+            "app.workflow.db.update_workflow_requirement"
+        ) as update:
+            with self.assertRaises(WorkflowError) as raised:
+                submit_requirement(
+                    "wf-test-owner",
+                    WorkflowRequirementRequest(
+                        documentTitle="需求模版.adoc",
+                        version="V1.0.0",
+                        demands=[
+                            {
+                                "demandIndex": 1,
+                                "title": "需求一",
+                                "items": [
+                                    {
+                                        "itemIndex": 1,
+                                        "title": "线索列表展示是否为测试字段",
+                                        "parentDemandTitle": "需求一",
+                                        "ownerName": "姬志猛",
+                                    }
+                                ],
+                            }
+                        ],
+                    ),
+                )
+
+        self.assertIn("task owner mismatch", str(raised.exception))
+        self.assertIn("readOwnerName=谢铭琪", str(raised.exception))
         update.assert_not_called()
 
     def test_submit_requirement_uses_dingtalk_read_project_name_before_stale_context(self) -> None:
