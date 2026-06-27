@@ -37,6 +37,14 @@ def _get_decorator_call(function: ast.FunctionDef) -> ast.Call:
 
 
 def _assert_requires_api_token(testcase: unittest.TestCase, decorator: ast.Call) -> None:
+    _assert_requires_token_function(testcase, decorator, "require_api_token")
+
+
+def _assert_requires_delete_api_token(testcase: unittest.TestCase, decorator: ast.Call) -> None:
+    _assert_requires_token_function(testcase, decorator, "require_delete_api_token")
+
+
+def _assert_requires_token_function(testcase: unittest.TestCase, decorator: ast.Call, function_name: str) -> None:
     keyword = _find_keyword(decorator, "dependencies")
     testcase.assertIsNotNone(keyword)
     testcase.assertEqual(keyword.arg, "dependencies")
@@ -46,7 +54,7 @@ def _assert_requires_api_token(testcase: unittest.TestCase, decorator: ast.Call)
     testcase.assertIsInstance(depends_call, ast.Call)
     testcase.assertEqual(ast.unparse(depends_call.func), "Depends")
     testcase.assertEqual(len(depends_call.args), 1)
-    testcase.assertEqual(ast.unparse(depends_call.args[0]), "require_api_token")
+    testcase.assertEqual(ast.unparse(depends_call.args[0]), function_name)
 
 
 def _find_keyword(decorator: ast.Call, name: str) -> ast.keyword | None:
@@ -110,6 +118,14 @@ class FlowEventRouteTest(unittest.TestCase):
                 self.assertEqual(ast.unparse(decorator.func), decorator_name)
                 self.assertEqual(ast.literal_eval(decorator.args[0]), path)
                 _assert_requires_api_token(self, decorator)
+
+    def test_yunxiao_delete_route_requires_delete_scoped_token(self) -> None:
+        module = _load_module()
+        function = _find_function(module, "yunxiao_workitem_delete")
+        decorator = _get_decorator_call(function)
+        self.assertEqual(ast.unparse(decorator.func), "app.delete")
+        self.assertEqual(ast.literal_eval(decorator.args[0]), "/yunxiao/workitems")
+        _assert_requires_delete_api_token(self, decorator)
 
     def test_public_flow_event_returns_structured_error_on_internal_exception(self) -> None:
         if importlib.util.find_spec("fastapi") is None:

@@ -4,10 +4,10 @@ Upsert Adapter API client token into MySQL.
 
 Prefer environment variables so tokens do not land in shell history:
   ADAPTER_CLIENT_TOKEN=xxx python scripts/upsert_api_client.py \
-    --client-id codex-local \
-    --client-name Codex本地调用 \
-    --scopes workflow:read,workflow:write \
-    --created-by 姬志猛
+    --client-id adapter-default \
+    --client-name Adapter默认调用方 \
+    --scopes workflow:read,workflow:write,yunxiao:delete \
+    --created-by system
 
 The script stores SHA-256 token hashes and the original token in MySQL, but
 never prints the token.
@@ -34,7 +34,7 @@ def main() -> None:
     parser.add_argument("--client-name", required=True, help="调用方名称")
     parser.add_argument("--token", help="API token 明文；推荐改用 ADAPTER_CLIENT_TOKEN，避免进入 shell 历史")
     parser.add_argument("--token-env", default="ADAPTER_CLIENT_TOKEN", help="读取 token 的环境变量名")
-    parser.add_argument("--scopes", default="", help="权限范围，逗号分隔，例如 workflow:read,workflow:write")
+    parser.add_argument("--scopes", default="", help="权限范围，逗号分隔，例如 workflow:read,workflow:write；删除云效工作项需 yunxiao:delete")
     parser.add_argument("--enabled", choices=("0", "1"), default="1", help="是否启用：1启用，0停用")
     parser.add_argument("--expires-at", default=None, help="过期时间，例如 2026-12-31 23:59:59；空表示不过期")
     parser.add_argument("--created-by", default="", help="创建人")

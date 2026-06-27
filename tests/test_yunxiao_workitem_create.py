@@ -258,7 +258,7 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
         self.assertEqual(result["parentId"], "REQ-ROOT")
         self.assertEqual(result["sprint"], "sprint-1")
 
-    def test_build_payload_resolves_sprint_from_requirement_version_for_personal_token(self) -> None:
+    def test_build_payload_resolves_exact_sprint_from_requirement_version_for_personal_token(self) -> None:
         from app.yunxiao import build_create_workitem_payload
 
         workflow = _workflow()
@@ -279,12 +279,102 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
         def fake_request(**kwargs):
             self.assertEqual(kwargs["method"], "GET")
             self.assertIn("/sprints?", kwargs["path"])
-            return [{"id": "sprint-1", "name": "CRM-集团-V1.0.0", "status": "TODO"}]
+            return [
+                {"id": "sprint-wrong", "name": "CRM-集团-V1.0.0", "status": "TODO"},
+                {"id": "sprint-1", "name": "V1.0.0", "status": "TODO"},
+            ]
 
         with patch("app.yunxiao._request_yunxiao_personal_token_rest", side_effect=fake_request):
             payload = build_create_workitem_payload(workflow, config, "codex")
 
         self.assertEqual(payload["sprint"], "sprint-1")
+
+    def test_build_payload_creates_sprint_when_requirement_version_is_missing_in_yunxiao(self) -> None:
+        from app.yunxiao import build_create_workitem_payload
+
+        workflow = _workflow()
+        workflow["context"]["requirement"]["version"] = "V1.0.0"
+        config = {
+            "authType": "personal_token",
+            "scheme": "https",
+            "endpoint": "openapi-rdc.aliyuncs.com",
+            "organizationId": "org-pat",
+            "projectId": "project-pat",
+            "personalToken": "pat-secret",
+            "category": "Req",
+            "workitemTypeIdentifier": "type-req",
+            "assignee": "account-pat",
+            "timeout": 30,
+        }
+        captured = []
+
+        def fake_request(**kwargs):
+            captured.append(kwargs)
+            if kwargs["method"] == "GET":
+                return [{"id": "sprint-wrong", "name": "CRM-集团-V1.0.0", "status": "TODO"}]
+            self.assertEqual(kwargs["method"], "POST")
+            self.assertEqual(kwargs["path"], "/oapi/v1/projex/organizations/org-pat/projects/project-pat/sprints")
+            self.assertEqual(kwargs["payload"]["name"], "V1.0.0")
+            self.assertEqual(kwargs["payload"]["owners"], ["account-pat"])
+            return {"id": "sprint-created", "name": "V1.0.0"}
+
+        with patch("app.yunxiao._request_yunxiao_personal_token_rest", side_effect=fake_request):
+            payload = build_create_workitem_payload(workflow, config, "codex")
+
+        self.assertEqual(payload["sprint"], "sprint-created")
+        self.assertEqual([item["method"] for item in captured], ["GET", "GET", "POST"])
+
+    def test_build_payload_reads_created_sprint_id_from_wrapped_response(self) -> None:
+        from app.yunxiao import build_create_workitem_payload
+
+        workflow = _workflow()
+        workflow["context"]["requirement"]["version"] = "V1.0.0"
+        config = {
+            "authType": "personal_token",
+            "scheme": "https",
+            "endpoint": "openapi-rdc.aliyuncs.com",
+            "organizationId": "org-pat",
+            "projectId": "project-pat",
+            "personalToken": "pat-secret",
+            "category": "Req",
+            "workitemTypeIdentifier": "type-req",
+            "assignee": "account-pat",
+            "timeout": 30,
+        }
+
+        def fake_request(**kwargs):
+            if kwargs["method"] == "GET":
+                return []
+            return {"success": True, "data": {"id": "sprint-created", "name": "V1.0.0"}}
+
+        with patch("app.yunxiao._request_yunxiao_personal_token_rest", side_effect=fake_request):
+            payload = build_create_workitem_payload(workflow, config, "codex")
+
+        self.assertEqual(payload["sprint"], "sprint-created")
+
+    def test_build_payload_does_not_set_sprint_when_requirement_version_is_empty(self) -> None:
+        from app.yunxiao import build_create_workitem_payload
+
+        workflow = _workflow()
+        workflow["context"]["requirement"]["version"] = ""
+        config = {
+            "authType": "personal_token",
+            "scheme": "https",
+            "endpoint": "openapi-rdc.aliyuncs.com",
+            "organizationId": "org-pat",
+            "projectId": "project-pat",
+            "personalToken": "pat-secret",
+            "category": "Req",
+            "workitemTypeIdentifier": "type-req",
+            "assignee": "account-pat",
+            "timeout": 30,
+        }
+
+        with patch("app.yunxiao._request_yunxiao_personal_token_rest") as request:
+            payload = build_create_workitem_payload(workflow, config, "codex")
+
+        self.assertNotIn("sprint", payload)
+        request.assert_not_called()
 
     def test_create_workitem_tree_creates_parent_and_child_tasks(self) -> None:
         from app.yunxiao import create_yunxiao_workitem
@@ -491,7 +581,8 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
                 create_yunxiao_workitem(workflow, "codex")
 
         self.assertIn("Yunxiao assignee config missing", str(raised.exception))
-        self.assertEqual([item["payload"]["subject"] for item in captured], ["需求一"])
+        self.assertIn("assignee=不存在的人", str(raised.exception))
+        self.assertEqual(captured, [])
 
     def test_create_workitem_tree_failure_exposes_partial_result(self) -> None:
         from app.yunxiao import YunxiaoError, create_yunxiao_workitem
@@ -539,9 +630,47 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
         self.assertIn("Yunxiao requirement tree creation failed", str(raised.exception))
         partial_result = getattr(raised.exception, "partial_result", None)
         self.assertIsNotNone(partial_result)
-        self.assertEqual(partial_result["demandCount"], 1)
+        self.assertEqual(partial_result["demandCount"], 0)
         self.assertEqual(partial_result["taskCount"], 0)
         self.assertEqual(partial_result["taskIdentifiers"], [])
+
+    def test_create_workitem_tree_missing_requested_owner_lists_project_members(self) -> None:
+        from app.yunxiao import YunxiaoError, create_yunxiao_workitem
+
+        workflow = _workflow()
+        workflow["context"]["requirement"] = {
+            "summary": "新增客户跟进记录接口",
+            "demands": [
+                {
+                    "demandIndex": 1,
+                    "title": "需求一",
+                    "items": [
+                        {
+                            "itemIndex": 1,
+                            "title": "任务一",
+                            "ownerName": "未配置负责人",
+                            "contentLines": ["创建一条学生信息"],
+                        }
+                    ],
+                }
+            ],
+        }
+
+        with patch.dict(os.environ, ENV, clear=True), patch("app.yunxiao.db.find_yunxiao_project_member", return_value=None), patch(
+            "app.yunxiao.db.list_yunxiao_project_members",
+            return_value=[
+                {"name": "姬志猛", "accountId": "user-jzm"},
+                {"name": "谢铭琪", "accountId": "user-xmq"},
+            ],
+        ), patch("app.yunxiao._request_yunxiao_openapi") as request_mock:
+            with self.assertRaises(YunxiaoError) as raised:
+                create_yunxiao_workitem(workflow, "codex")
+
+        message = str(raised.exception)
+        self.assertIn("Yunxiao assignee config missing", message)
+        self.assertIn("assignee=未配置负责人", message)
+        self.assertIn("Available project members: 姬志猛, 谢铭琪", message)
+        request_mock.assert_not_called()
 
     def test_create_workitem_uses_default_project_member_before_legacy_default_assignee(self) -> None:
         from app.yunxiao import create_yunxiao_workitem
@@ -933,6 +1062,57 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
         self.assertEqual(captured["event_payload"]["step"], "yunxiao_workitem_create")
         self.assertEqual(captured["event_payload"]["partialResult"]["taskIdentifiers"], ["TASK-1"])
 
+    def test_delete_workitems_dry_run_does_not_call_yunxiao(self) -> None:
+        from app.yunxiao import delete_yunxiao_workitems
+
+        workflow = _workflow()
+        with _patch_personal_token_config(), patch(
+            "app.yunxiao._request_yunxiao_personal_token_rest"
+        ) as request_mock:
+            result = delete_yunxiao_workitems(workflow, ["TASK-1", "REQ-1"], operator="codex", dry_run=True)
+
+        self.assertTrue(result["dryRun"])
+        self.assertEqual(result["deletePlan"], ["TASK-1", "REQ-1"])
+        self.assertEqual(result["deleted"], [])
+        request_mock.assert_not_called()
+
+    def test_delete_workitems_explicit_ids_do_not_expand_to_workflow_tasks(self) -> None:
+        from app.yunxiao import delete_yunxiao_workitems
+
+        workflow = _workflow_with_requirement_tree()
+        with _patch_personal_token_config():
+            result = delete_yunxiao_workitems(workflow, ["TASK-1"], operator="codex", dry_run=True, include_demands=True)
+
+        self.assertEqual(result["deletePlan"], ["TASK-1"])
+
+    def test_delete_workitems_requires_personal_token_auth(self) -> None:
+        from app.yunxiao import YunxiaoError, delete_yunxiao_workitems
+
+        with patch.dict(os.environ, ENV, clear=True):
+            with self.assertRaises(YunxiaoError) as raised:
+                delete_yunxiao_workitems(_workflow(), ["TASK-1"], operator="codex", dry_run=False)
+
+        self.assertIn("requires personal_token auth", str(raised.exception))
+
+    def test_delete_workitems_calls_personal_token_delete(self) -> None:
+        from app.yunxiao import delete_yunxiao_workitems
+
+        captured = []
+
+        def fake_request(**kwargs):
+            captured.append(kwargs)
+            return {"success": True}
+
+        with _patch_personal_token_config(), patch(
+            "app.yunxiao._request_yunxiao_personal_token_rest", side_effect=fake_request
+        ):
+            result = delete_yunxiao_workitems(_workflow(), ["TASK-1", "REQ-1"], operator="codex", dry_run=False)
+
+        self.assertFalse(result["dryRun"])
+        self.assertEqual([item["workitemIdentifier"] for item in result["deleted"]], ["TASK-1", "REQ-1"])
+        self.assertEqual([call["method"] for call in captured], ["DELETE", "DELETE"])
+        self.assertEqual(captured[0]["path"], "/oapi/v1/projex/organizations/org-1/workitems/TASK-1")
+
 
 def _workflow() -> dict:
     return {
@@ -962,6 +1142,64 @@ def _workflow() -> dict:
             }
         },
     }
+
+
+def _workflow_with_requirement_tree() -> dict:
+    workflow = _workflow()
+    workflow["context"]["yunxiao"] = {
+        "createResult": {
+            "workitemIdentifier": "REQ-ROOT",
+            "workitemDisplayId": "REQ-ROOT-DISPLAY",
+            "demandCount": 1,
+            "taskCount": 2,
+            "taskIdentifiers": ["TASK-1", "TASK-2"],
+            "demands": [
+                {
+                    "workitemIdentifier": "REQ-ROOT",
+                    "workitemDisplayId": "REQ-ROOT-DISPLAY",
+                    "items": [
+                        {
+                            "workitemIdentifier": "TASK-1",
+                            "workitemDisplayId": "TASK-1-DISPLAY",
+                            "category": "Task",
+                            "parentIdentifier": "REQ-ROOT",
+                        },
+                        {
+                            "workitemIdentifier": "TASK-2",
+                            "workitemDisplayId": "TASK-2-DISPLAY",
+                            "category": "Task",
+                            "parentIdentifier": "REQ-ROOT",
+                        },
+                    ],
+                }
+            ],
+        }
+    }
+    return workflow
+
+
+def _patch_personal_token_config():
+    project_config = {
+        "projectName": "jdb-school-crm",
+        "accountName": "pat-main",
+        "organizationId": "org-1",
+        "projectId": "project-1",
+        "category": "Req",
+        "workitemTypeIdentifier": "type-1",
+        "assignee": "user-1",
+    }
+    account_config = {
+        "accountName": "pat-main",
+        "authType": "personal_token",
+        "legacyToken": "pat-secret",
+        "endpoint": "devops.cn-hangzhou.aliyuncs.com",
+    }
+    return patch.multiple(
+        "app.yunxiao.db",
+        configured=lambda: True,
+        find_yunxiao_project_config=lambda project_name: project_config,
+        find_yunxiao_account_config=lambda account_name: account_config,
+    )
 
 
 if __name__ == "__main__":

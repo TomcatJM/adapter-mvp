@@ -186,6 +186,79 @@ class WorkflowP0Test(unittest.TestCase):
         self.assertEqual(requirement["demands"][0]["items"][0]["parentDemandIndex"], 1)
         self.assertEqual(requirement["demands"][0]["items"][0]["contentLines"][0], "创建一条学生信息")
 
+    def test_submit_requirement_rejects_unknown_document_project_and_lists_yunxiao_projects(self) -> None:
+        from app.models import WorkflowRequirementRequest
+        from app.workflow import WorkflowError, submit_requirement
+
+        workflow = {"workflowId": "wf-test-project", "status": "DOC_READ", "context": {}}
+
+        with patch("app.workflow.db.find_workflow_instance", return_value=workflow), patch(
+            "app.workflow.db.find_yunxiao_project_config", return_value=None
+        ), patch(
+            "app.workflow.db.list_yunxiao_project_configs",
+            return_value=[
+                {"projectName": "01-校务系统"},
+                {"projectName": "02-园务系统"},
+            ],
+        ), patch("app.workflow.db.update_workflow_requirement") as update:
+            with self.assertRaises(WorkflowError) as raised:
+                submit_requirement(
+                    "wf-test-project",
+                    WorkflowRequirementRequest(
+                        documentTitle="需求模版.adoc",
+                        version="V1.0.0",
+                        extra={"sourceProjectName": "校务"},
+                        demands=[
+                            {
+                                "demandIndex": 1,
+                                "title": "需求一",
+                                "items": [{"itemIndex": 1, "title": "任务一", "parentDemandTitle": "需求一"}],
+                            }
+                        ],
+                    ),
+                )
+
+        message = str(raised.exception)
+        self.assertIn("adapter_yunxiao_project_config", message)
+        self.assertIn("projectName=校务", message)
+        self.assertIn("01-校务系统", message)
+        self.assertIn("02-园务系统", message)
+        update.assert_not_called()
+
+    def test_submit_requirement_uses_document_project_from_yunxiao_project_config(self) -> None:
+        from app.models import WorkflowRequirementRequest
+        from app.workflow import submit_requirement
+
+        workflow = {"workflowId": "wf-test-project", "status": "DOC_READ", "context": {"projectName": "jdb-demo"}}
+
+        def fake_update(**kwargs):
+            return {**workflow, "status": "REQUIREMENT_PARSED", "context": kwargs["context"]}
+
+        with patch("app.workflow.db.find_workflow_instance", return_value=workflow), patch(
+            "app.workflow.db.find_yunxiao_project_config",
+            return_value={"projectName": "01-校务系统", "projectConfigId": 12},
+        ), patch("app.workflow.db.update_workflow_requirement", side_effect=fake_update):
+            result = submit_requirement(
+                "wf-test-project",
+                WorkflowRequirementRequest(
+                    documentTitle="需求模版.adoc",
+                    version="V1.0.0",
+                    extra={"sourceProjectName": "01-校务系统"},
+                    demands=[
+                        {
+                            "demandIndex": 1,
+                            "title": "需求一",
+                            "items": [{"itemIndex": 1, "title": "任务一", "parentDemandTitle": "需求一"}],
+                        }
+                    ],
+                ),
+            )
+
+        context = result["workflow"]["context"]
+        self.assertEqual(context["projectName"], "01-校务系统")
+        self.assertEqual(context["sourceProjectName"], "01-校务系统")
+        self.assertEqual(context["requirement"]["extra"]["sourceProjectName"], "01-校务系统")
+
     def test_submit_coding_result_moves_to_code_submitted(self) -> None:
         from app.models import WorkflowCodingResultRequest
         from app.workflow import submit_coding_result

@@ -247,6 +247,78 @@ def close_yunxiao_workitem(
     }
 
 
+def delete_yunxiao_workitems(
+    workflow: dict[str, Any],
+    workitem_ids: list[str],
+    *,
+    operator: str,
+    dry_run: bool = True,
+    include_demands: bool = False,
+) -> dict[str, Any]:
+    """删除明确指定的云效工作项。"""
+    explicit_ids = _unique_texts(workitem_ids)
+    delete_plan = explicit_ids or _workflow_delete_workitem_ids(workflow, include_demands=include_demands)
+    if not delete_plan:
+        raise YunxiaoError("Yunxiao delete requires explicit workitemIds or a workflow with recorded Yunxiao workitems")
+
+    config = _load_config(workflow, purpose="delete")
+    if config.get("authType") != "personal_token":
+        raise YunxiaoError("Yunxiao delete requires personal_token auth; configure a scoped Yunxiao personal token account.")
+
+    result: dict[str, Any] = {
+        "dryRun": bool(dry_run),
+        "operator": operator,
+        "projectName": config.get("projectName"),
+        "deletePlan": delete_plan,
+        "deleted": [],
+        "authType": config.get("authType"),
+    }
+    if dry_run:
+        return result
+
+    deleted: list[dict[str, Any]] = []
+    for workitem_id in delete_plan:
+        response = delete_yunxiao_workitem(workitem_id, config)
+        deleted.append(
+            {
+                "workitemIdentifier": workitem_id,
+                "response": _safe_response(response),
+            }
+        )
+    result["deleted"] = deleted
+    return result
+
+
+def delete_yunxiao_workitem(workitem_id: str, config: dict[str, Any]) -> Any:
+    """删除单个云效工作项。"""
+    workitem_id = _clean_text(workitem_id)
+    if not workitem_id:
+        raise YunxiaoError("Yunxiao delete workitem id is required")
+    if config.get("authType") != "personal_token":
+        raise YunxiaoError("Yunxiao delete requires personal_token auth")
+    response = _request_yunxiao_personal_token_rest(
+        method="DELETE",
+        path=_personal_token_workitem_path(config, urllib.parse.quote(workitem_id, safe="")),
+        payload=None,
+        config=config,
+        timeout=config["timeout"],
+    )
+    _require_api_success(response, "Yunxiao delete workitem")
+    return response
+
+
+def _workflow_delete_workitem_ids(workflow: dict[str, Any], *, include_demands: bool) -> list[str]:
+    """从 workflow 创建结果中提取删除顺序：任务在前，需求在后。"""
+    ids: list[str] = []
+    for record in _workflow_requirement_task_reference_records(workflow):
+        workitem_id = _clean_text(record.get("workitemIdentifier"))
+        if workitem_id:
+            ids.append(workitem_id)
+    if include_demands:
+        ids.extend(_workflow_requirement_demand_ids(workflow))
+    return _unique_texts(ids)
+
+
 def _snapshot_requirement_demand_statuses(workflow: dict[str, Any], config: dict[str, Any]) -> list[dict[str, Any]]:
     """记录需求树父需求状态，避免关闭子任务后被云效联动关需求。"""
     snapshots: list[dict[str, Any]] = []
@@ -724,7 +796,7 @@ def build_create_workitem_payload(
 
 
 def _resolve_workitem_sprint_id(workflow: dict[str, Any], requirement: dict[str, Any], config: dict[str, Any]) -> str | None:
-    """解析云效迭代ID：项目配置优先，其次按需求文档版本号匹配云效迭代。"""
+    """解析云效迭代ID：项目配置优先，其次按需求文档版本号精确匹配或创建迭代。"""
     configured_sprint_id = _clean_text(config.get("sprintId"))
     if configured_sprint_id:
         return configured_sprint_id
@@ -738,15 +810,11 @@ def _resolve_workitem_sprint_id(workflow: dict[str, Any], requirement: dict[str,
         )
     sprint = _find_personal_token_sprint_by_version(version, config)
     if not sprint:
-        raise YunxiaoError(
-            "Yunxiao sprint not found for requirement version: "
-            f"version={version} projectName={config.get('projectName') or ''}. "
-            "Create a matching Yunxiao sprint or configure adapter_yunxiao_project_config.sprint_id."
-        )
+        sprint = _create_personal_token_sprint_for_version(workflow, version, config)
     sprint_id = _clean_text(sprint.get("id") or sprint.get("identifier"))
     if not sprint_id:
         raise YunxiaoError(
-            "Yunxiao sprint matched but id is missing: "
+            "Yunxiao sprint resolved but id is missing: "
             f"version={version} sprintName={_clean_text(sprint.get('name'))}"
         )
     config["sprintId"] = sprint_id
@@ -755,13 +823,70 @@ def _resolve_workitem_sprint_id(workflow: dict[str, Any], requirement: dict[str,
 
 
 def _find_personal_token_sprint_by_version(version: str, config: dict[str, Any]) -> dict[str, Any] | None:
-    """按需求版本号从云效迭代列表中选择一个最匹配的迭代。"""
+    """按需求版本号从云效迭代列表中精确选择迭代，禁止包含式猜测。"""
     candidates = _list_personal_token_sprints(config, name=version)
     matched = _select_sprint_candidate(version, candidates)
     if matched:
         return matched
     candidates = _list_personal_token_sprints(config, name=None)
     return _select_sprint_candidate(version, candidates)
+
+
+def _create_personal_token_sprint_for_version(
+    workflow: dict[str, Any],
+    version: str,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    """按文档版本号创建云效迭代。"""
+    sprint_name = _clean_text(version)
+    if not sprint_name:
+        raise YunxiaoError("Yunxiao sprint name is required")
+    owner = _resolve_workitem_assignee(workflow, config)
+    owner_id = _clean_text(owner.get("accountId"))
+    if not owner_id:
+        raise YunxiaoError(
+            "Yunxiao sprint owner is missing: "
+            f"version={sprint_name} projectName={config.get('projectName') or ''}. "
+            "Configure adapter_yunxiao_project_member_relation default assignee or project default assignee."
+        )
+    created = _create_personal_token_sprint(sprint_name, [owner_id], config)
+    sprint_id = _clean_text(created.get("id") or created.get("identifier"))
+    if sprint_id:
+        created.setdefault("name", sprint_name)
+        return created
+
+    # Some Yunxiao responses may omit the created id; re-read by exact name before failing.
+    matched = _find_personal_token_sprint_by_version(sprint_name, config)
+    if matched:
+        return matched
+    raise YunxiaoError(
+        "Yunxiao sprint created but id is missing and exact re-query failed: "
+        f"version={sprint_name} projectName={config.get('projectName') or ''}"
+    )
+
+
+def _create_personal_token_sprint(name: str, owner_ids: list[str], config: dict[str, Any]) -> dict[str, Any]:
+    """调用云效 personal token API 创建迭代。"""
+    organization_id = urllib.parse.quote(config["organizationId"], safe="")
+    project_id = urllib.parse.quote(config["projectId"], safe="")
+    path = f"/oapi/v1/projex/organizations/{organization_id}/projects/{project_id}/sprints"
+    payload = {
+        "capacityHours": 0,
+        "description": "",
+        "endDate": "",
+        "name": name,
+        "owners": owner_ids,
+        "startDate": "",
+    }
+    response = _request_yunxiao_personal_token_rest(
+        method="POST",
+        path=path,
+        payload=payload,
+        config=config,
+        timeout=config["timeout"],
+    )
+    _require_api_success(response, "Yunxiao create sprint")
+    return _extract_sprint_object(response)
 
 
 def _list_personal_token_sprints(config: dict[str, Any], *, name: str | None) -> list[dict[str, Any]]:
@@ -807,21 +932,26 @@ def _extract_sprint_list(response: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _extract_sprint_object(response: Any) -> dict[str, Any]:
+    """从云效迭代创建响应中提取迭代对象。"""
+    if not isinstance(response, dict):
+        return {}
+    for source in _dict_candidates(response):
+        if _clean_text(source.get("id") or source.get("identifier")):
+            return source
+    return response
+
+
 def _select_sprint_candidate(version: str, candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """选择与版本号匹配的迭代，优先未归档、精确匹配。"""
+    """选择与版本号精确匹配的迭代，禁止把前后缀相似名称当作命中。"""
     version_norm = _normalize_sprint_match_text(version)
     if not version_norm:
         return None
     matched = [
-        candidate
-        for candidate in candidates
-        if version_norm in _normalize_sprint_match_text(candidate.get("name"))
+        candidate for candidate in candidates if _normalize_sprint_match_text(candidate.get("name")) == version_norm
     ]
     if not matched:
         return None
-    exact = [item for item in matched if _normalize_sprint_match_text(item.get("name")) == version_norm]
-    if len(exact) == 1:
-        return exact[0]
     active = [item for item in matched if _normalize_sprint_status(item.get("status")) in {"TODO", "DOING"}]
     if len(active) == 1:
         return active[0]
@@ -1581,6 +1711,7 @@ def _create_yunxiao_requirement_tree(
     if any((demand.get("items") or []) for demand in demands if isinstance(demand, dict)):
         _require_task_workitem_config(config)
     try:
+        _validate_requirement_tree_task_owners(workflow, config, demands)
         for demand in demands:
             demand_title = _clean_text(demand.get("title"))
             if not demand_title:
@@ -1699,6 +1830,47 @@ def _build_requirement_tree_partial_result(
         result["workitemIdentifier"] = root.get("workitemIdentifier")
         result["workitemDisplayId"] = root.get("workitemDisplayId")
     return result
+
+
+def _validate_requirement_tree_task_owners(
+    workflow: dict[str, Any],
+    config: dict[str, Any],
+    demands: list[dict[str, Any]],
+) -> None:
+    """创建需求树前校验显式负责人，避免失败后留下半截云效数据。"""
+    project_name = _resolve_project_name(workflow) or _clean_text(config.get("projectName"))
+    missing: list[str] = []
+    for demand in demands:
+        for item in demand.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            owner_name = _clean_text(item.get("ownerName"))
+            if not owner_name or owner_name in missing:
+                continue
+            member = db.find_yunxiao_project_member(project_name, owner_name)
+            if not member:
+                missing.append(owner_name)
+    if not missing:
+        return
+    available = _available_project_member_names(project_name)
+    suffix = f" Available project members: {', '.join(available)}." if available else ""
+    raise YunxiaoError(
+        "Yunxiao assignee config missing: "
+        f"projectName={project_name or ''}, assignee={', '.join(missing)}. "
+        "Configure adapter_yunxiao_member and adapter_yunxiao_project_member_relation "
+        "with member_name or yunxiao_account_id."
+        f"{suffix}"
+    )
+
+
+def _available_project_member_names(project_name: str | None) -> list[str]:
+    """列出项目成员姓名用于错误提示。"""
+    names: list[str] = []
+    for member in db.list_yunxiao_project_members(_clean_text(project_name)):
+        name = _clean_text(member.get("name")) or _clean_text(member.get("accountId"))
+        if name and name not in names:
+            names.append(name)
+    return names
 
 
 def _create_yunxiao_single_workitem(

@@ -176,7 +176,8 @@ def submit_requirement(workflow_id: str, request: WorkflowRequirementRequest) ->
         "openQuestions": request.open_questions,
         "extra": request.extra,
     }
-    context = _merge_context(workflow, {"requirement": requirement})
+    project_context = _validate_document_project_name(workflow, requirement)
+    context = _merge_context(workflow, {**project_context, "requirement": requirement})
     updated = db.update_workflow_requirement(
         workflow_id=workflow_id,
         context=context,
@@ -214,6 +215,57 @@ def _derive_requirement_summary(request: WorkflowRequirementRequest) -> str:
             if first_item_title:
                 return first_item_title
     return ""
+
+
+def _validate_document_project_name(workflow: dict[str, Any], requirement: dict[str, Any]) -> dict[str, Any]:
+    """校验钉钉文档项目名必须来自云效项目配置。"""
+    document_project_name = _document_project_name(workflow, requirement)
+    if not document_project_name:
+        return {}
+    project_config = db.find_yunxiao_project_config(document_project_name)
+    if project_config:
+        project_name = _clean_text(project_config.get("projectName")) or document_project_name
+        return {
+            "projectName": project_name,
+            "sourceProjectName": document_project_name,
+        }
+    available = _available_yunxiao_project_names()
+    suffix = f" Available Yunxiao project names: {', '.join(available)}." if available else ""
+    raise WorkflowError(
+        "DingTalk document projectName is not configured in adapter_yunxiao_project_config: "
+        f"projectName={document_project_name}.{suffix}"
+    )
+
+
+def _document_project_name(workflow: dict[str, Any], requirement: dict[str, Any]) -> str:
+    """提取钉钉文档中声明的项目名。"""
+    extra = requirement.get("extra") if isinstance(requirement.get("extra"), dict) else {}
+    context = workflow.get("context") if isinstance(workflow.get("context"), dict) else {}
+    for source in (extra, requirement, context):
+        if not isinstance(source, dict):
+            continue
+        for key in (
+            "sourceProjectName",
+            "documentProjectName",
+            "dingtalkProjectName",
+            "yunxiaoProjectName",
+            "projectName",
+            "project_name",
+        ):
+            value = _clean_text(source.get(key))
+            if value:
+                return value
+    return ""
+
+
+def _available_yunxiao_project_names() -> list[str]:
+    """列出可用于钉钉文档项目名校验的云效项目名。"""
+    names: list[str] = []
+    for config in db.list_yunxiao_project_configs():
+        name = _clean_text(config.get("projectName"))
+        if name and name not in names:
+            names.append(name)
+    return names
 
 
 def _normalize_requirement_demand(demand: Any) -> dict[str, Any]:

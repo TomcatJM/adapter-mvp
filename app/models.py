@@ -176,3 +176,15 @@ class WorkflowCodingResultRequest(BaseModel):
     extra: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {"populate_by_name": True}
+
+
+class YunxiaoWorkitemDeleteRequest(BaseModel):
+    """YunxiaoWorkitemDeleteRequest 请求模型。"""
+    operator: str = "codex"
+    project_name: str | None = Field(default=None, alias="projectName")
+    workflow_id: str | None = Field(default=None, alias="workflowId")
+    workitem_ids: list[str] = Field(default_factory=list, alias="workitemIds")
+    include_demands: bool = Field(default=False, alias="includeDemands")
+    dry_run: bool = Field(default=True, alias="dryRun")
+
+    model_config = {"populate_by_name": True}

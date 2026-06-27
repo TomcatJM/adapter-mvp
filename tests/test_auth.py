@@ -57,6 +57,40 @@ class AdapterAuthTest(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 503)
         self.assertEqual(raised.exception.detail, "API token store unavailable")
 
+    def test_delete_token_requires_database_scope(self) -> None:
+        from app.auth import require_delete_api_token
+
+        with patch.dict(os.environ, {"ADAPTER_API_TOKEN": "env-token"}, clear=True), patch(
+            "app.auth.db.find_api_client_by_token",
+            return_value={"clientId": "codex", "clientName": "Codex", "scopes": ["workflow:write"]},
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                require_delete_api_token("Bearer db-token")
+
+        self.assertEqual(raised.exception.status_code, 403)
+        self.assertEqual(raised.exception.detail, "Token missing required scope: yunxiao:delete")
+
+    def test_delete_token_accepts_yunxiao_delete_scope(self) -> None:
+        from app.auth import require_delete_api_token
+
+        with patch.dict(os.environ, {"ADAPTER_API_TOKEN": "env-token"}, clear=True), patch(
+            "app.auth.db.find_api_client_by_token",
+            return_value={"clientId": "admin", "clientName": "Admin", "scopes": ["workflow:write", "yunxiao:delete"]},
+        ):
+            require_delete_api_token("Bearer db-token")
+
+    def test_env_token_cannot_delete_without_database_scope(self) -> None:
+        from app.auth import require_delete_api_token
+
+        with patch.dict(os.environ, {"ADAPTER_API_TOKEN": "env-token"}, clear=True), patch(
+            "app.auth.db.find_api_client_by_token", return_value=None
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                require_delete_api_token("Bearer env-token")
+
+        self.assertEqual(raised.exception.status_code, 403)
+        self.assertEqual(raised.exception.detail, "Token missing required scope: yunxiao:delete")
+
 
 if __name__ == "__main__":
     unittest.main()

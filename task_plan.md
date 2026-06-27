@@ -25,6 +25,9 @@ APIFOX_SYNCED -> YUNXIAO_TASK_CLOSED
 | 10. pipelineId 自动发现 Apifox 项目 | complete | 真实云效 Webhook 拿不到 `WORKFLOW_ID` 时，先用 `pipelineId` 查本地映射；未命中则查询云效 `GetPipeline`，唯一匹配已有 Apifox 项目后回写 `adapter_apifox_pipeline_config`。远端已验证 `4836717 -> jdb-school-crm` 自动发现并缓存。 |
 | 11. 无 WORKFLOW_ID 的 workflow 项目级绑定 | complete | 用 `pipelineId -> projectName` 后仅在该项目唯一活跃 workflow 时绑定；多候选返回歧义，不推进、不导入。 |
 | 12. 真实端到端闭环验证 | complete | `wf-e7569729c0c84761` 已跑通 `CREATED -> DOC_READ -> REQUIREMENT_PARSED -> YUNXIAO_TASK_CREATED -> CODING_REQUESTED -> PIPELINE_SUCCESS -> APIFOX_SYNCED -> YUNXIAO_TASK_CLOSED`；本地全量测试 84 条通过。 |
+| 13. 云效项目/人员初始化工程化 | pending | 远端 DB 已完成一次性初始化；后续补批量同步脚本或接口，支持从云效项目列表同步项目、人员、项目人员关系和默认负责人，要求 dry-run/apply、事务回滚、敏感凭据只读环境或 DB 配置。 |
+| 14. Apifox 团队项目同步工程化 | pending | 远端 DB 已手工初始化 jdb 团队 22 个 Apifox 项目；后续补可复用接口或脚本，按团队/账号同步项目到 `adapter_apifox_project_config`，避免依赖浏览器手工点选。 |
+| 15. 云效流水线初始化工程化 | pending | 远端 DB 已手工初始化开发/UAT流水线映射；后续补可复用接口或脚本，从云效流水线列表同步 `adapter_apifox_pipeline_config`，只纳入开发/UAT流水线，排除生产流水线，并按流水线名解析服务名生成 JDB OpenAPI 地址。 |
 
 ## Decisions
 

@@ -12,7 +12,7 @@ from app.apifox import (
     fetch_sanitized_openapi,
     verify_signed_upstream_url,
 )
-from app.auth import require_api_token, require_execute_approval
+from app.auth import require_api_token, require_delete_api_token, require_execute_approval
 from app.dingtalk_docs import DingTalkDocError, read_dingtalk_doc, resolve_dingtalk_operator
 from app.audit import (
     find_by_task_id,
@@ -33,6 +33,7 @@ from app.models import (
     WorkflowResolveRequest,
     WorkflowRetryRequest,
     WorkflowStartRequest,
+    YunxiaoWorkitemDeleteRequest,
     YunxiaoPipelineFailureCallback,
     YunxiaoTaskCallback,
 )
@@ -49,6 +50,7 @@ from app.workflow import (
     submit_coding_result,
     submit_requirement,
 )
+from app.yunxiao import YunxiaoError, delete_yunxiao_workitems
 from app.yunxiao_pipeline import handle_pipeline_failure, handle_pipeline_running, handle_pipeline_success
 
 
@@ -316,6 +318,46 @@ def workflow_resolve(workflow_id: str, request: WorkflowResolveRequest):
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.delete(
+    "/yunxiao/workitems",
+    summary="删除云效工作项",
+    tags=["交付工作流"],
+    dependencies=[Depends(require_delete_api_token)],
+)
+def yunxiao_workitem_delete(request: YunxiaoWorkitemDeleteRequest):
+    """删除明确指定的云效需求或任务。"""
+    try:
+        workflow = _delete_request_workflow(request)
+        return delete_yunxiao_workitems(
+            workflow,
+            request.workitem_ids,
+            operator=request.operator,
+            dry_run=request.dry_run,
+            include_demands=request.include_demands,
+        )
+    except (WorkflowError, YunxiaoError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+def _delete_request_workflow(request: YunxiaoWorkitemDeleteRequest) -> dict[str, Any]:
+    """构造删除用 workflow 上下文。"""
+    if request.workflow_id:
+        return get_workflow(request.workflow_id, event_limit=0)
+    project_name = str(request.project_name or "").strip()
+    if not project_name:
+        raise ValueError("Yunxiao delete requires workflowId or projectName")
+    return {
+        "workflowId": None,
+        "status": "DELETE_REQUESTED",
+        "context": {
+            "projectName": project_name,
+            "requirement": {"affectedRepos": [project_name]},
+        },
+    }
 
 
 @app.post("/adapter/preview", summary="预览适配器操作", tags=["适配器执行"], dependencies=[Depends(require_api_token)])

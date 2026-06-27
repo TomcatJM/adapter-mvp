@@ -1882,6 +1882,53 @@ def find_yunxiao_project_member(project_name: str, assignee: str) -> dict[str, A
         return None
 
 
+def list_yunxiao_project_members(project_name: str) -> list[dict[str, Any]]:
+    """列出云效项目成员。"""
+    if not configured() or not project_name:
+        return []
+    try:
+        ensure_schema()
+        with connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        rel.project_name,
+                        rel.project_config_id,
+                        rel.member_id,
+                        member.member_name,
+                        member.yunxiao_account_id,
+                        rel.is_default,
+                        rel.enabled,
+                        COALESCE(rel.remark, member.remark) AS remark
+                    FROM adapter_yunxiao_project_member_relation rel
+                    JOIN adapter_yunxiao_member member
+                      ON member.yunxiao_account_id = rel.yunxiao_account_id
+                    WHERE LOWER(rel.project_name) = LOWER(%s)
+                      AND rel.enabled = 1
+                      AND member.enabled = 1
+                    ORDER BY rel.is_default DESC, member.member_name ASC, rel.id ASC
+                    """,
+                    (project_name,),
+                )
+                rows = cursor.fetchall()
+        return [
+            {
+                "projectName": row.get("project_name"),
+                "projectConfigId": row.get("project_config_id"),
+                "memberId": row.get("member_id"),
+                "name": row.get("member_name"),
+                "accountId": row.get("yunxiao_account_id"),
+                "isDefault": bool(row.get("is_default")),
+                "enabled": bool(row.get("enabled")),
+                "remark": row.get("remark"),
+            }
+            for row in rows
+        ]
+    except Exception:
+        return []
+
+
 def find_default_yunxiao_project_member(project_name: str) -> dict[str, Any] | None:
     """查找default云效项目成员。"""
     if not configured() or not project_name:

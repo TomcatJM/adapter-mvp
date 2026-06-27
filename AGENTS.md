@@ -15,6 +15,8 @@
 - 关单只关闭提交信息里 `云效任务` 显式列出的真实子任务，不关闭需求；如果提交信息没有 `云效任务` ID，必须跳过关单，不允许默认关闭全部任务；手动补救只能通过 `closeTaskRefs` 传同一类任务 ID。
 - webhook 解析提交信息时，不能只识别固定英文键；应兼容 `云效ID`、`云效任务`、`任务编号`、`yunxiaoTaskDisplayId` 等用户可见写法。
 - 解析产品钉钉需求文档前，必须先对齐 `delivery/templates/钉钉需求文档标准模版.md`；如果文档出现新格式，先沉淀或补充模版样式，再继续解析和创建云效工作项。
+- 钉钉文档里的项目名只按 `adapter_yunxiao_project_config.project_name` 校验和解析；不能从 Apifox 项目名、流水线项目名或代码仓库名反推。未匹配时必须列出 DB 中可选云效项目名。
+- 钉钉文档里的任务负责人如果非空，必须命中 `adapter_yunxiao_member` + `adapter_yunxiao_project_member_relation`；未命中时必须失败并列出项目已配置人员，不能改用默认负责人。只有负责人为空时才允许使用项目默认负责人。
 
 ## 修改代码前后要求
 
