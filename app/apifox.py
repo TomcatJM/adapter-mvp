@@ -73,22 +73,26 @@ def _resolve_config(payload: dict[str, Any]) -> dict[str, Any]:
         if pipeline_discovery.get("matched"):
             pipeline_config = _find_pipeline_config(pipeline_id) or {
                 "pipelineId": pipeline_id,
-                "projectName": pipeline_discovery.get("projectName"),
+                "apifoxProjectConfigId": pipeline_discovery.get("apifoxProjectConfigId"),
+                "pipelineName": pipeline_discovery.get("pipelineName"),
+                "serviceName": pipeline_discovery.get("serviceName"),
+                "envName": pipeline_discovery.get("envName"),
+                "repoName": pipeline_discovery.get("repoName"),
                 "remark": pipeline_discovery.get("remark"),
             }
-    env_project_name = os.getenv(f"APIFOX_PIPELINE_{_normalize_key(pipeline_id)}_PROJECT")
     repo_project_name = _repo_name(str(_pick(source, "repo", default="")))
-    if payload_project_name:
+    pipeline_project_config = (
+        _find_project_config_by_id(pipeline_config.get("apifoxProjectConfigId"))
+        if pipeline_config and pipeline_config.get("apifoxProjectConfigId")
+        else None
+    )
+    if pipeline_project_config:
+        project_name = str(pipeline_project_config["projectName"])
+        project_name_source = "database_pipeline_config_id"
+        project_name_remark = pipeline_config.get("remark") if pipeline_config else None
+    elif payload_project_name:
         project_name = str(payload_project_name)
         project_name_source = "payload"
-        project_name_remark = None
-    elif pipeline_config and pipeline_config.get("projectName"):
-        project_name = str(pipeline_config["projectName"])
-        project_name_source = "database_pipeline"
-        project_name_remark = pipeline_config.get("remark")
-    elif env_project_name:
-        project_name = str(env_project_name)
-        project_name_source = "environment_pipeline"
         project_name_remark = None
     elif repo_project_name:
         project_name = str(repo_project_name)
@@ -99,7 +103,7 @@ def _resolve_config(payload: dict[str, Any]) -> dict[str, Any]:
         project_name_source = "unresolved"
         project_name_remark = None
     project_key = _normalize_key(project_name)
-    project_config = _find_project_config(project_name) if project_name else None
+    project_config = pipeline_project_config or (_find_project_config(project_name) if project_name else None)
     db_access_token = (project_config or {}).get("accessToken")
     env_access_token = os.getenv("APIFOX_ACCESS_TOKEN")
     project_id = (
@@ -342,6 +346,11 @@ def _find_project_config(project_name: str) -> dict[str, Any] | None:
     return db.find_apifox_project_config(project_name)
 
 
+def _find_project_config_by_id(config_id: int | str | None) -> dict[str, Any] | None:
+    """内部辅助函数：按主键查找项目配置。"""
+    return db.find_apifox_project_config_by_id(config_id)
+
+
 def _find_pipeline_config(pipeline_id: str) -> dict[str, Any] | None:
     """内部辅助函数：查找流水线配置。"""
     return db.find_apifox_pipeline_config(pipeline_id)
@@ -369,7 +378,7 @@ def _missing_project_mapping_reason(config: dict[str, Any]) -> str:
     return (
         f"missing Apifox project mapping for pipelineId={pipeline_id}; "
         "pass APIFOX_PROJECT_ID with OPENAPI_URL, pass PROJECT_NAME/SERVICE_NAME/APP_NAME/APIFOX_PROJECT_KEY, "
-        "or configure adapter_apifox_pipeline_config / APIFOX_PIPELINE_<PIPELINE_ID>_PROJECT. "
+        "or configure adapter_apifox_pipeline_config with apifox_project_config_id. "
         "APIFOX_DEFAULT_PROJECT_ID is intentionally ignored."
     )
 

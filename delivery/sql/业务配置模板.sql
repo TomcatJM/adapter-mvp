@@ -263,18 +263,27 @@ ON DUPLICATE KEY UPDATE
 -- ============================================================
 INSERT INTO adapter_apifox_pipeline_config (
     pipeline_id,
-    project_name,
+    pipeline_name,
+    service_name,
+    env_name,
+    repo_name,
     apifox_project_config_id,
     remark
 )
 VALUES (
     @pipeline_id,
+    CONCAT(@project_name, '开发/UAT部署'),
+    @project_name,
+    'dev-uat',
     @project_name,
     (SELECT id FROM adapter_apifox_project_config WHERE project_name = @project_name LIMIT 1),
     'SQL模板初始化流水线映射'
 )
 ON DUPLICATE KEY UPDATE
-    project_name = VALUES(project_name),
+    pipeline_name = VALUES(pipeline_name),
+    service_name = VALUES(service_name),
+    env_name = VALUES(env_name),
+    repo_name = VALUES(repo_name),
     apifox_project_config_id = VALUES(apifox_project_config_id),
     remark = VALUES(remark);
 

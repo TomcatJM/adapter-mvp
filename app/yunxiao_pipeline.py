@@ -7,7 +7,6 @@ from typing import Any
 from app import db
 from app.apifox import maybe_import_from_flow_event
 from app.models import YunxiaoPipelineFailureCallback
-from app.yunxiao_flow import discover_project_from_pipeline
 
 
 PIPELINE_SUCCESS_FROM_STATUSES = {"CODING_REQUESTED", "CODE_SUBMITTED", "PIPELINE_RUNNING"}
@@ -466,20 +465,6 @@ def _find_workflow_for_callback(
         if workflow:
             return workflow, {"source": "branch_commit", "attempts": attempts}
 
-    if pipeline_id:
-        project_name = _project_name_from_pipeline_config(pipeline_id)
-        if project_name:
-            attempts.append({"source": "project_active_workflow", "pipelineId": pipeline_id, "projectName": project_name})
-            workflow = _find_with_ambiguity_guard(
-                lambda: _find_active_workflow_by_project(project_name, project_binding_statuses),
-                "project_active_workflow",
-                attempts,
-            )
-            if isinstance(workflow, dict) and workflow.get("reason") == "workflow match ambiguous":
-                return None, workflow
-            if workflow:
-                return workflow, {"source": "project_active_workflow", "attempts": attempts}
-
     return None, {"source": None, "attempts": attempts, "reason": "workflow not matched"}
 
 
@@ -494,16 +479,6 @@ def _find_with_ambiguity_guard(find: Any, source: str, attempts: list[dict[str, 
             "reason": "workflow match ambiguous",
             "error": str(exc),
         }
-
-
-def _project_name_from_pipeline_config(pipeline_id: str) -> str | None:
-    """内部辅助函数：项目name来自流水线配置。"""
-    config = db.find_apifox_pipeline_config(pipeline_id)
-    project_name = _clean_text((config or {}).get("projectName"))
-    if project_name:
-        return project_name
-    discovery = discover_project_from_pipeline(pipeline_id)
-    return _clean_text(discovery.get("projectName")) if discovery.get("matched") else None
 
 
 def _find_workflow_by_yunxiao_reference(value: str, statuses: set[str]) -> dict[str, Any] | None:

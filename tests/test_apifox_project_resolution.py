@@ -73,15 +73,27 @@ class ApifoxProjectResolutionTest(unittest.TestCase):
             return_value={
                 "matched": True,
                 "projectName": "adapter-mvp",
+                "apifoxProjectConfigId": 9,
                 "source": "yunxiao_pipeline",
                 "remark": "auto-discovered",
+                "pipelineName": "adapter-mvp开发/UAT部署",
+                "serviceName": "adapter-mvp",
+                "envName": "dev-uat",
             },
         ) as discover, patch("app.apifox._find_project_config", return_value=project_config), patch(
+            "app.apifox._find_project_config_by_id", return_value=project_config
+        ), patch(
             "app.apifox._preflight_openapi", return_value={"ok": True, "pathCount": 20}
         ), patch("app.apifox._import_openapi", return_value={"statusCode": 201}) as import_openapi:
             find_pipeline_config.side_effect = [
                 None,
-                {"pipelineId": "4836717", "projectName": "adapter-mvp", "remark": "auto-discovered"},
+                {
+                    "pipelineId": "4836717",
+                    "apifoxProjectConfigId": 9,
+                    "serviceName": "adapter-mvp",
+                    "envName": "dev-uat",
+                    "remark": "auto-discovered",
+                },
             ]
             result = maybe_import_from_flow_event(payload)
 
@@ -89,9 +101,48 @@ class ApifoxProjectResolutionTest(unittest.TestCase):
         import_openapi.assert_called_once()
         self.assertTrue(result["imported"])
         self.assertEqual(result["projectName"], "adapter-mvp")
-        self.assertEqual(result["projectNameSource"], "database_pipeline")
+        self.assertEqual(result["projectNameSource"], "database_pipeline_config_id")
         self.assertEqual(result["projectId"], "8460173")
         self.assertEqual(result["pipelineDiscovery"]["source"], "yunxiao_pipeline")
+
+    def test_pipeline_mapping_uses_apifox_project_config_id_without_project_name_lookup(self) -> None:
+        payload = {
+            "task": {"pipelineId": "4537737", "statusCode": "SUCCESS"},
+            "sources": [],
+            "globalParams": [],
+        }
+        project_config = {
+            "projectName": "pay-支付服务",
+            "apifoxProjectId": "7857001",
+            "openapiUrl": "https://micro-api-test.kidcastle.com.cn/gw/jdb-pay/v3/api-docs",
+            "remark": "Apifox jdb团队项目初始化",
+        }
+
+        with patch(
+            "app.apifox._find_pipeline_config",
+            return_value={
+                "pipelineId": "4537737",
+                "pipelineName": "jdb-pay开发/UAT部署",
+                "serviceName": "jdb-pay",
+                "apifoxProjectConfigId": 23,
+                "remark": "支付服务开发流水线",
+            },
+        ), patch("app.apifox._find_project_config") as find_project_config, patch(
+            "app.apifox._find_project_config_by_id",
+            return_value=project_config,
+            create=True,
+        ) as find_project_config_by_id, patch(
+            "app.apifox._preflight_openapi", return_value={"ok": True, "pathCount": 8}
+        ), patch("app.apifox._import_openapi", return_value={"statusCode": 201}) as import_openapi:
+            result = maybe_import_from_flow_event(payload)
+
+        find_project_config.assert_not_called()
+        find_project_config_by_id.assert_called_once_with(23)
+        import_openapi.assert_called_once()
+        self.assertTrue(result["imported"])
+        self.assertEqual(result["projectName"], "pay-支付服务")
+        self.assertEqual(result["projectNameSource"], "database_pipeline_config_id")
+        self.assertEqual(result["projectId"], "7857001")
 
     def test_missing_project_id_reports_project_name_without_default_fallback(self) -> None:
         payload = {

@@ -81,15 +81,18 @@ CREATE TABLE IF NOT EXISTS adapter_apifox_project_config (
 CREATE TABLE IF NOT EXISTS adapter_apifox_pipeline_config (
     id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
     pipeline_id VARCHAR(64) NOT NULL COMMENT '云效流水线ID',
-    project_name VARCHAR(128) NOT NULL COMMENT '项目名称，例如 jdb-order',
-    apifox_project_config_id BIGINT NULL COMMENT 'Apifox项目配置主键ID，关联adapter_apifox_project_config.id',
+    pipeline_name VARCHAR(256) NULL COMMENT '云效流水线名称，例如 jdb-pay开发/UAT部署',
+    service_name VARCHAR(128) NOT NULL COMMENT '服务名，例如 jdb-pay',
+    env_name VARCHAR(64) NOT NULL COMMENT '环境名，例如 dev-uat',
+    repo_name VARCHAR(128) NULL COMMENT '仓库名，例如 jdb-pay',
+    apifox_project_config_id BIGINT NOT NULL COMMENT 'Apifox项目配置主键ID，关联adapter_apifox_project_config.id',
     remark VARCHAR(512) NULL COMMENT '备注',
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     UNIQUE KEY uk_adapter_apifox_pipeline_id (pipeline_id),
     KEY idx_adapter_apifox_pipeline_project_config_id (apifox_project_config_id),
-    KEY idx_adapter_apifox_pipeline_project_name (project_name)
+    KEY idx_adapter_apifox_pipeline_service_env (service_name, env_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter Apifox流水线项目映射配置表';
 
 CREATE TABLE IF NOT EXISTS adapter_yunxiao_account_config (

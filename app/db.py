@@ -160,15 +160,18 @@ def ensure_schema() -> None:
                     CREATE TABLE IF NOT EXISTS adapter_apifox_pipeline_config (
                         id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
                         pipeline_id VARCHAR(64) NOT NULL COMMENT '云效流水线ID',
-                        project_name VARCHAR(128) NOT NULL COMMENT '项目名称，例如 jdb-order',
-                        apifox_project_config_id BIGINT NULL COMMENT 'Apifox项目配置主键ID，关联adapter_apifox_project_config.id',
+                        pipeline_name VARCHAR(256) NULL COMMENT '云效流水线名称，例如 jdb-pay开发/UAT部署',
+                        service_name VARCHAR(128) NOT NULL COMMENT '服务名，例如 jdb-pay',
+                        env_name VARCHAR(64) NOT NULL COMMENT '环境名，例如 dev-uat',
+                        repo_name VARCHAR(128) NULL COMMENT '仓库名，例如 jdb-pay',
+                        apifox_project_config_id BIGINT NOT NULL COMMENT 'Apifox项目配置主键ID，关联adapter_apifox_project_config.id',
                         remark VARCHAR(512) NULL COMMENT '备注',
                         created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
                         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                             ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
                         UNIQUE KEY uk_adapter_apifox_pipeline_id (pipeline_id),
                         KEY idx_adapter_apifox_pipeline_project_config_id (apifox_project_config_id),
-                        KEY idx_adapter_apifox_pipeline_project_name (project_name)
+                        KEY idx_adapter_apifox_pipeline_service_env (service_name, env_name)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter Apifox流水线项目映射配置表'
                     """
                 )
@@ -456,10 +459,29 @@ def _ensure_comments(cursor) -> None:
         "ALTER TABLE adapter_apifox_pipeline_config COMMENT='Adapter Apifox流水线项目映射配置表'",
         "ALTER TABLE adapter_apifox_pipeline_config MODIFY id BIGINT NOT NULL AUTO_INCREMENT COMMENT '自增主键'",
         "ALTER TABLE adapter_apifox_pipeline_config MODIFY pipeline_id VARCHAR(64) NOT NULL COMMENT '云效流水线ID'",
-        "ALTER TABLE adapter_apifox_pipeline_config MODIFY project_name VARCHAR(128) NOT NULL COMMENT '项目名称，例如 jdb-order'",
-        "ALTER TABLE adapter_apifox_pipeline_config ADD COLUMN apifox_project_config_id BIGINT NULL COMMENT 'Apifox项目配置主键ID，关联adapter_apifox_project_config.id' AFTER project_name",
-        "ALTER TABLE adapter_apifox_pipeline_config MODIFY apifox_project_config_id BIGINT NULL COMMENT 'Apifox项目配置主键ID，关联adapter_apifox_project_config.id'",
+        "ALTER TABLE adapter_apifox_pipeline_config ADD COLUMN pipeline_name VARCHAR(256) NULL COMMENT '云效流水线名称，例如 jdb-pay开发/UAT部署' AFTER pipeline_id",
+        "ALTER TABLE adapter_apifox_pipeline_config MODIFY pipeline_name VARCHAR(256) NULL COMMENT '云效流水线名称，例如 jdb-pay开发/UAT部署'",
+        "ALTER TABLE adapter_apifox_pipeline_config ADD COLUMN service_name VARCHAR(128) NULL COMMENT '服务名，例如 jdb-pay' AFTER pipeline_name",
+        "ALTER TABLE adapter_apifox_pipeline_config ADD COLUMN env_name VARCHAR(64) NULL COMMENT '环境名，例如 dev-uat' AFTER service_name",
+        "ALTER TABLE adapter_apifox_pipeline_config ADD COLUMN repo_name VARCHAR(128) NULL COMMENT '仓库名，例如 jdb-pay' AFTER env_name",
+        "ALTER TABLE adapter_apifox_pipeline_config ADD COLUMN apifox_project_config_id BIGINT NULL COMMENT 'Apifox项目配置主键ID，关联adapter_apifox_project_config.id' AFTER repo_name",
+        """
+        UPDATE adapter_apifox_pipeline_config pipeline
+        JOIN adapter_apifox_project_config project
+          ON LOWER(project.project_name) = LOWER(pipeline.project_name)
+        SET pipeline.apifox_project_config_id = project.id
+        WHERE pipeline.apifox_project_config_id IS NULL
+        """,
+        "UPDATE adapter_apifox_pipeline_config SET service_name = COALESCE(NULLIF(service_name, ''), project_name) WHERE service_name IS NULL OR service_name = ''",
+        "UPDATE adapter_apifox_pipeline_config SET env_name = COALESCE(NULLIF(env_name, ''), 'dev-uat') WHERE env_name IS NULL OR env_name = ''",
+        "ALTER TABLE adapter_apifox_pipeline_config MODIFY service_name VARCHAR(128) NOT NULL COMMENT '服务名，例如 jdb-pay'",
+        "ALTER TABLE adapter_apifox_pipeline_config MODIFY env_name VARCHAR(64) NOT NULL COMMENT '环境名，例如 dev-uat'",
+        "ALTER TABLE adapter_apifox_pipeline_config MODIFY repo_name VARCHAR(128) NULL COMMENT '仓库名，例如 jdb-pay'",
+        "ALTER TABLE adapter_apifox_pipeline_config MODIFY apifox_project_config_id BIGINT NOT NULL COMMENT 'Apifox项目配置主键ID，关联adapter_apifox_project_config.id'",
         "ALTER TABLE adapter_apifox_pipeline_config ADD INDEX idx_adapter_apifox_pipeline_project_config_id (apifox_project_config_id)",
+        "ALTER TABLE adapter_apifox_pipeline_config ADD INDEX idx_adapter_apifox_pipeline_service_env (service_name, env_name)",
+        "ALTER TABLE adapter_apifox_pipeline_config DROP INDEX idx_adapter_apifox_pipeline_project_name",
+        "ALTER TABLE adapter_apifox_pipeline_config DROP COLUMN project_name",
         "ALTER TABLE adapter_apifox_pipeline_config MODIFY remark VARCHAR(512) NULL COMMENT '备注'",
         "ALTER TABLE adapter_apifox_pipeline_config MODIFY created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'",
         "ALTER TABLE adapter_apifox_pipeline_config MODIFY updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'",
@@ -546,14 +568,6 @@ def _backfill_config_relation_ids(cursor) -> None:
         WHERE project.account_name IS NOT NULL
           AND (project.account_config_id IS NULL
            OR project.account_config_id <> account.id)
-        """,
-        """
-        UPDATE adapter_apifox_pipeline_config pipeline
-        JOIN adapter_apifox_project_config project
-          ON LOWER(project.project_name) = LOWER(pipeline.project_name)
-        SET pipeline.apifox_project_config_id = project.id
-        WHERE pipeline.apifox_project_config_id IS NULL
-           OR pipeline.apifox_project_config_id <> project.id
         """,
     ]
     for statement in statements:
@@ -1575,18 +1589,49 @@ def find_apifox_project_config(project_name: str) -> dict[str, Any] | None:
                     (project_name,),
                 )
                 row = cursor.fetchone()
-        if not row:
-            return None
-        return {
-            "projectName": row.get("project_name"),
-            "apifoxProjectConfigId": row.get("id"),
-            "accountName": row.get("account_name"),
-            "accountConfigId": row.get("account_config_id"),
-            "accessToken": row.get("access_token") if row.get("account_enabled") in (1, True) else None,
-            "apifoxProjectId": row.get("apifox_project_id"),
-            "openapiUrl": row.get("openapi_url"),
-            "remark": row.get("remark"),
-        }
+        return _apifox_project_config_from_row(row) if row else None
+    except Exception:
+        return None
+
+
+def find_apifox_project_config_by_id(config_id: int | str | None) -> dict[str, Any] | None:
+    """按主键查找Apifox项目配置。"""
+    if not configured() or not config_id:
+        return None
+    try:
+        ensure_schema()
+        with connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        project.id,
+                        project.project_name,
+                        project.account_name,
+                        project.account_config_id,
+                        account.access_token,
+                        account.enabled AS account_enabled,
+                        project.apifox_project_id,
+                        project.openapi_url,
+                        project.remark
+                    FROM adapter_apifox_project_config project
+                    LEFT JOIN adapter_apifox_account_config account
+                      ON (
+                            project.account_config_id IS NOT NULL
+                        AND account.id = project.account_config_id
+                       )
+                       OR (
+                            project.account_config_id IS NULL
+                        AND project.account_name IS NOT NULL
+                        AND LOWER(account.account_name) = LOWER(project.account_name)
+                       )
+                    WHERE project.id = %s
+                    LIMIT 1
+                    """,
+                    (config_id,),
+                )
+                row = cursor.fetchone()
+        return _apifox_project_config_from_row(row) if row else None
     except Exception:
         return None
 
@@ -1601,7 +1646,14 @@ def find_apifox_pipeline_config(pipeline_id: str) -> dict[str, Any] | None:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT pipeline_id, project_name, apifox_project_config_id, remark
+                    SELECT
+                        pipeline_id,
+                        pipeline_name,
+                        service_name,
+                        env_name,
+                        repo_name,
+                        apifox_project_config_id,
+                        remark
                     FROM adapter_apifox_pipeline_config
                     WHERE pipeline_id = %s
                     LIMIT 1
@@ -1613,7 +1665,10 @@ def find_apifox_pipeline_config(pipeline_id: str) -> dict[str, Any] | None:
             return None
         return {
             "pipelineId": row.get("pipeline_id"),
-            "projectName": row.get("project_name"),
+            "pipelineName": row.get("pipeline_name"),
+            "serviceName": row.get("service_name"),
+            "envName": row.get("env_name"),
+            "repoName": row.get("repo_name"),
             "apifoxProjectConfigId": row.get("apifox_project_config_id"),
             "remark": row.get("remark"),
         }
@@ -1653,35 +1708,66 @@ def list_apifox_project_configs() -> list[dict[str, Any]]:
         return []
 
 
-def upsert_apifox_pipeline_config(pipeline_id: str, project_name: str, remark: str | None = None) -> None:
+def upsert_apifox_pipeline_config(
+    pipeline_id: str,
+    apifox_project_config_id: int | str,
+    *,
+    service_name: str,
+    env_name: str,
+    pipeline_name: str | None = None,
+    repo_name: str | None = None,
+    remark: str | None = None,
+) -> None:
     """upsertApifox流水线配置。"""
-    if not configured() or not pipeline_id or not project_name:
+    if not configured() or not pipeline_id or not apifox_project_config_id or not service_name or not env_name:
         return
     ensure_schema()
     with connect() as conn:
         with conn.cursor() as cursor:
-            apifox_project_config_id = _find_id_by_name(
-                cursor,
-                table="adapter_apifox_project_config",
-                name_column="project_name",
-                name_value=project_name,
-            )
             cursor.execute(
                 """
                 INSERT INTO adapter_apifox_pipeline_config (
                     pipeline_id,
-                    project_name,
+                    pipeline_name,
+                    service_name,
+                    env_name,
+                    repo_name,
                     apifox_project_config_id,
                     remark
                 )
-                VALUES (%s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
-                    project_name = VALUES(project_name),
+                    pipeline_name = VALUES(pipeline_name),
+                    service_name = VALUES(service_name),
+                    env_name = VALUES(env_name),
+                    repo_name = VALUES(repo_name),
                     apifox_project_config_id = VALUES(apifox_project_config_id),
                     remark = VALUES(remark)
                 """,
-                (pipeline_id, project_name, apifox_project_config_id, remark),
+                (
+                    pipeline_id,
+                    pipeline_name,
+                    service_name,
+                    env_name,
+                    repo_name,
+                    apifox_project_config_id,
+                    remark,
+                ),
             )
+
+
+def _apifox_project_config_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    """将Apifox项目配置行转换为API字典。"""
+    return {
+        "projectName": row.get("project_name"),
+        "apifoxProjectConfigId": row.get("id"),
+        "accountName": row.get("account_name"),
+        "accountConfigId": row.get("account_config_id"),
+        "accessToken": row.get("access_token") if row.get("account_enabled") in (1, True) else None,
+        "apifoxProjectId": row.get("apifox_project_id"),
+        "openapiUrl": row.get("openapi_url"),
+        "remark": row.get("remark"),
+    }
 
 
 def _find_id_by_name(cursor, *, table: str, name_column: str, name_value: str | None) -> int | None:

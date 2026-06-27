@@ -3,8 +3,8 @@ Smoke-test Apifox project resolution from database configuration.
 
 The script monkey-patches the DB lookup so it does not need a real database.
 It verifies that PROJECT_NAME=jdb-order can resolve projectId=7049238 from
-the project configuration table, and pipelineId=4989239 can resolve
-PROJECT_NAME=jdb-school-gmc from the pipeline configuration table.
+the project configuration table, and pipelineId=4989239 can resolve the
+Apifox project through apifox_project_config_id.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ import app.apifox as apifox  # noqa: E402
 def main() -> None:
     original_env = os.environ.copy()
     original_lookup = getattr(apifox, "_find_project_config", None)
+    original_lookup_by_id = getattr(apifox, "_find_project_config_by_id", None)
     original_pipeline_lookup = getattr(apifox, "_find_pipeline_config", None)
     try:
         os.environ.clear()
@@ -40,12 +41,28 @@ def main() -> None:
                 return {"apifoxProjectId": "8336358", "remark": "集团管理中心接口项目"}
             return None
 
+        def fake_lookup_by_id(config_id: int):
+            if config_id == 12:
+                return {
+                    "projectName": "jdb-school-gmc",
+                    "apifoxProjectId": "8336358",
+                    "remark": "集团管理中心接口项目",
+                }
+            return None
+
         def fake_pipeline_lookup(pipeline_id: str):
             if pipeline_id == "4989239":
-                return {"projectName": "jdb-school-gmc", "remark": "GMC Kubernetes发布流水线"}
+                return {
+                    "apifoxProjectConfigId": 12,
+                    "pipelineName": "jdb-school-gmc开发/UAT部署",
+                    "serviceName": "jdb-school-gmc",
+                    "envName": "dev-uat",
+                    "remark": "GMC Kubernetes发布流水线",
+                }
             return None
 
         apifox._find_project_config = fake_lookup  # type: ignore[attr-defined]
+        apifox._find_project_config_by_id = fake_lookup_by_id  # type: ignore[attr-defined]
         apifox._find_pipeline_config = fake_pipeline_lookup  # type: ignore[attr-defined]
 
         project_result = apifox.maybe_import_from_flow_event(
@@ -73,7 +90,7 @@ def main() -> None:
             }
         )
         assert pipeline_result["projectName"] == "jdb-school-gmc", pipeline_result
-        assert pipeline_result["projectNameSource"] == "database_pipeline", pipeline_result
+        assert pipeline_result["projectNameSource"] == "database_pipeline_config_id", pipeline_result
         assert pipeline_result["projectNameRemark"] == "GMC Kubernetes发布流水线", pipeline_result
         assert pipeline_result["projectKey"] == "JDB_SCHOOL_GMC", pipeline_result
         assert pipeline_result["projectId"] == "8336358", pipeline_result
@@ -93,6 +110,13 @@ def main() -> None:
                 pass
         else:
             apifox._find_project_config = original_lookup  # type: ignore[attr-defined]
+        if original_lookup_by_id is None:
+            try:
+                delattr(apifox, "_find_project_config_by_id")
+            except AttributeError:
+                pass
+        else:
+            apifox._find_project_config_by_id = original_lookup_by_id  # type: ignore[attr-defined]
         if original_pipeline_lookup is None:
             try:
                 delattr(apifox, "_find_pipeline_config")

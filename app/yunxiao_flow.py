@@ -48,16 +48,32 @@ def discover_project_from_pipeline(pipeline_id: str) -> dict[str, Any]:
             )
             continue
 
+        pipeline_name = _pipeline_name(pipeline)
+        service_name = _service_name_from_pipeline(pipeline) or _normalize_name(match["projectName"]) or match["projectName"]
+        env_name = _env_name_from_pipeline(pipeline) or "dev-uat"
+        repo_name = _repo_name_from_pipeline(pipeline)
         remark = _pipeline_cache_remark(pipeline, yunxiao_project, match)
-        db.upsert_apifox_pipeline_config(pipeline_id, match["projectName"], remark)
+        db.upsert_apifox_pipeline_config(
+            pipeline_id,
+            match["apifoxProjectConfigId"],
+            pipeline_name=pipeline_name,
+            service_name=service_name,
+            env_name=env_name,
+            repo_name=repo_name,
+            remark=remark,
+        )
         return {
             "matched": True,
             "pipelineId": pipeline_id,
             "projectName": match["projectName"],
+            "apifoxProjectConfigId": match["apifoxProjectConfigId"],
             "source": "yunxiao_pipeline",
             "remark": remark,
             "matchEvidence": match["evidence"],
-            "pipelineName": _pipeline_name(pipeline),
+            "pipelineName": pipeline_name,
+            "serviceName": service_name,
+            "envName": env_name,
+            "repoName": repo_name,
             "yunxiaoProjectName": yunxiao_project.get("projectName"),
         }
 
@@ -133,11 +149,18 @@ def _match_project_from_pipeline(
     candidates: list[dict[str, Any]] = []
     for config in project_configs:
         project_name = _clean_text(config.get("projectName"))
+        config_id = config.get("apifoxProjectConfigId")
         if not project_name:
             continue
         needles = {project_name.lower(), _normalize_name(project_name)}
         if any(needle and needle in evidence_text for needle in needles):
-            candidates.append({"projectName": project_name, "evidence": _compact_evidence(evidence_text, project_name)})
+            candidates.append(
+                {
+                    "projectName": project_name,
+                    "apifoxProjectConfigId": config_id,
+                    "evidence": _compact_evidence(evidence_text, project_name),
+                }
+            )
 
     if len(candidates) != 1:
         return None
@@ -183,6 +206,40 @@ def _pipeline_name(pipeline: dict[str, Any]) -> str | None:
         value = _clean_text(source.get("name") or source.get("pipelineName"))
         if value:
             return value
+    return None
+
+
+def _service_name_from_pipeline(pipeline: dict[str, Any]) -> str | None:
+    """从流水线名称推断服务名。"""
+    name = _pipeline_name(pipeline)
+    if not name:
+        return None
+    for marker in ("开发", "UAT", "部署"):
+        if marker in name:
+            return _clean_text(name.split(marker, 1)[0])
+    return _clean_text(name)
+
+
+def _env_name_from_pipeline(pipeline: dict[str, Any]) -> str | None:
+    """从流水线名称推断环境名。"""
+    name = (_pipeline_name(pipeline) or "").upper()
+    has_dev = "开发" in name
+    has_uat = "UAT" in name
+    if has_dev and has_uat:
+        return "dev-uat"
+    if has_dev:
+        return "dev"
+    if has_uat:
+        return "uat"
+    return None
+
+
+def _repo_name_from_pipeline(pipeline: dict[str, Any]) -> str | None:
+    """从流水线详情中提取仓库名。"""
+    for text in _collect_pipeline_text(pipeline):
+        match = re.search(r"\bjdb-[A-Za-z0-9_-]+\b", text)
+        if match:
+            return match.group(0)
     return None
 
 
