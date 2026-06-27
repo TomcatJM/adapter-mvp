@@ -230,6 +230,7 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
         self.assertEqual(captured[0]["path"], "/oapi/v1/projex/organizations/org-pat/workitems")
         self.assertEqual(captured[0]["payload"]["spaceId"], "project-pat")
         self.assertEqual(captured[0]["payload"]["workitemTypeId"], "type-pat")
+        self.assertEqual(captured[0]["payload"]["capacityHours"], 1)
         self.assertNotIn("spaceIdentifier", captured[0]["payload"])
         self.assertNotIn("workitemTypeIdentifier", captured[0]["payload"])
         self.assertEqual(captured[0]["config"]["personalToken"], "pat-secret")
@@ -257,6 +258,7 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
 
         self.assertEqual(result["parentId"], "REQ-ROOT")
         self.assertEqual(result["sprint"], "sprint-1")
+        self.assertEqual(result["capacityHours"], 1)
 
     def test_build_payload_resolves_exact_sprint_from_requirement_version_for_personal_token(self) -> None:
         from app.yunxiao import build_create_workitem_payload
@@ -316,6 +318,7 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
             self.assertEqual(kwargs["path"], "/oapi/v1/projex/organizations/org-pat/projects/project-pat/sprints")
             self.assertEqual(kwargs["payload"]["name"], "V1.0.0")
             self.assertEqual(kwargs["payload"]["owners"], ["account-pat"])
+            self.assertEqual(kwargs["payload"]["capacityHours"], 1)
             return {"id": "sprint-created", "name": "V1.0.0"}
 
         with patch("app.yunxiao._request_yunxiao_personal_token_rest", side_effect=fake_request):

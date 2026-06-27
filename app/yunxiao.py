@@ -871,7 +871,7 @@ def _create_personal_token_sprint(name: str, owner_ids: list[str], config: dict[
     project_id = urllib.parse.quote(config["projectId"], safe="")
     path = f"/oapi/v1/projex/organizations/{organization_id}/projects/{project_id}/sprints"
     payload = {
-        "capacityHours": 0,
+        "capacityHours": 1,
         "description": "",
         "endDate": "",
         "name": name,
@@ -1139,6 +1139,7 @@ def _personal_token_workitem_payload(payload: dict[str, Any], config: dict[str, 
         "subject": payload["subject"],
         "description": payload["description"],
         "assignedTo": payload["assignedTo"],
+        "capacityHours": 1,
     }
     if payload.get("fieldValueList"):
         personal_payload["fieldValueList"] = payload["fieldValueList"]
