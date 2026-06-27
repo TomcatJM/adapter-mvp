@@ -108,6 +108,8 @@ class WorkflowResolveRequest(BaseModel):
     operator: str = "codex"
     target_status: str = Field(alias="targetStatus")
     reason: str | None = None
+    project_name: str | None = Field(default=None, alias="projectName")
+    project_id: str | None = Field(default=None, alias="projectId")
 
     model_config = {"populate_by_name": True}
 

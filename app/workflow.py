@@ -22,7 +22,8 @@ class WorkflowError(RuntimeError):
     pass
 
 
-RESOLVABLE_TARGET_STATUSES = {"APIFOX_SYNCED", "PIPELINE_SUCCESS", "CODING_REQUESTED"}
+PROJECT_SELECTED_TARGET_STATUS = "PROJECT_SELECTED"
+RESOLVABLE_TARGET_STATUSES = {"APIFOX_SYNCED", "PIPELINE_SUCCESS", "CODING_REQUESTED", PROJECT_SELECTED_TARGET_STATUS}
 RETRYABLE_TARGET_STATUSES = {"CODING_REQUESTED"}
 
 
@@ -102,6 +103,8 @@ def resolve_workflow(workflow_id: str, request: WorkflowResolveRequest) -> dict[
     if target_status not in RESOLVABLE_TARGET_STATUSES:
         allowed = ", ".join(sorted(RESOLVABLE_TARGET_STATUSES))
         raise WorkflowError(f"Unsupported resolve targetStatus: {target_status}. Allowed: {allowed}")
+    if target_status == PROJECT_SELECTED_TARGET_STATUS:
+        return _resolve_project_selection(workflow, request)
     resolved = db.resolve_workflow_needs_human(
         workflow_id=workflow_id,
         target_status=target_status,
@@ -178,6 +181,24 @@ def submit_requirement(workflow_id: str, request: WorkflowRequirementRequest) ->
         "extra": request.extra,
     }
     project_context = _validate_document_project_name(workflow, requirement)
+    if project_context.get("needsHuman"):
+        context = _merge_context(workflow, {"requirement": requirement, "projectSelection": project_context["projectSelection"]})
+        message = _project_selection_message(project_context["projectSelection"])
+        updated = db.mark_workflow_needs_human(
+            workflow_id=workflow_id,
+            from_status="DOC_READ",
+            error=message,
+            operator=_clean_text(request.operator),
+            event_type="project_selection_required",
+            event_payload=project_context["projectSelection"],
+            context=context,
+        )
+        return {
+            "workflow": updated,
+            "resolved": False,
+            "projectSelection": project_context["projectSelection"],
+            "nextAction": "POST /workflow/{workflow_id}/resolve with targetStatus=PROJECT_SELECTED and projectName",
+        }
     context = _merge_context(workflow, {**project_context, "requirement": requirement})
     updated = db.update_workflow_requirement(
         workflow_id=workflow_id,
@@ -239,11 +260,107 @@ def _validate_document_project_name(workflow: dict[str, Any], requirement: dict[
             "projectName": project_name,
             "sourceProjectName": document_project_name,
         }
-    available = _available_yunxiao_project_names()
-    suffix = f" Available Yunxiao project names: {', '.join(available)}." if available else ""
-    raise WorkflowError(
+    candidates = _yunxiao_project_candidates(document_project_name)
+    return {
+        "needsHuman": True,
+        "projectSelection": {
+            "reason": "项目名未精确匹配 adapter_yunxiao_project_config",
+            "documentProjectName": document_project_name,
+            "candidates": candidates,
+            "nextAction": "请选择一个云效项目后继续",
+        },
+    }
+
+
+def _resolve_project_selection(workflow: dict[str, Any], request: WorkflowResolveRequest) -> dict[str, Any]:
+    """确认人工选择的云效项目并恢复到需求已解析状态。"""
+    context = workflow.get("context") if isinstance(workflow.get("context"), dict) else {}
+    selection = context.get("projectSelection") if isinstance(context.get("projectSelection"), dict) else {}
+    requirement = context.get("requirement") if isinstance(context.get("requirement"), dict) else {}
+    selected = _selected_project_config(request, selection)
+    if not selected:
+        candidates = selection.get("candidates") if isinstance(selection.get("candidates"), list) else []
+        candidate_names = [_clean_text(item.get("projectName")) for item in candidates if isinstance(item, dict)]
+        suffix = f" Candidates: {', '.join(name for name in candidate_names if name)}." if candidate_names else ""
+        raise WorkflowError(
+            "Selected Yunxiao project is not configured or not in current project candidates: "
+            f"projectName={_clean_text(request.project_name)}, projectId={_clean_text(request.project_id)}.{suffix}"
+        )
+    project_name = _clean_text(selected.get("projectName"))
+    document_project_name = _clean_text(selection.get("documentProjectName")) or project_name
+    updated_context = {
+        **context,
+        "projectName": project_name,
+        "sourceProjectName": document_project_name,
+        "projectSelection": {
+            **selection,
+            "selectedProjectName": project_name,
+            "selectedProjectId": _clean_text(selected.get("projectId")),
+            "resolved": True,
+        },
+        "requirement": {
+            **requirement,
+            "extra": {
+                **(requirement.get("extra") if isinstance(requirement.get("extra"), dict) else {}),
+                "documentProjectName": document_project_name,
+                "sourceProjectName": document_project_name,
+                "selectedYunxiaoProjectName": project_name,
+            },
+        },
+    }
+    resolved = db.resolve_workflow_needs_human(
+        workflow_id=workflow["workflowId"],
+        target_status="REQUIREMENT_PARSED",
+        operator=_clean_text(request.operator),
+        reason=_clean_text(request.reason) or f"Yunxiao project selected: {project_name}",
+        event_payload={
+            "targetStatus": PROJECT_SELECTED_TARGET_STATUS,
+            "resolvedStatus": "REQUIREMENT_PARSED",
+            "projectName": project_name,
+            "projectId": _clean_text(selected.get("projectId")),
+            "documentProjectName": document_project_name,
+        },
+        context=updated_context,
+    )
+    return {
+        "workflow": resolved,
+        "resolved": True,
+        "targetStatus": PROJECT_SELECTED_TARGET_STATUS,
+        "resolvedStatus": "REQUIREMENT_PARSED",
+        "nextAction": _resolve_next_action(PROJECT_SELECTED_TARGET_STATUS),
+    }
+
+
+def _selected_project_config(request: WorkflowResolveRequest, selection: dict[str, Any]) -> dict[str, Any] | None:
+    """从用户确认的项目名或projectId解析云效项目配置。"""
+    requested_name = _clean_text(request.project_name)
+    requested_id = _clean_text(request.project_id)
+    candidates = selection.get("candidates") if isinstance(selection.get("candidates"), list) else []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        candidate_name = _clean_text(candidate.get("projectName"))
+        candidate_id = _clean_text(candidate.get("projectId"))
+        if requested_name and _normalize_project_name(candidate_name) == _normalize_project_name(requested_name):
+            return candidate
+        if requested_id and candidate_id and candidate_id == requested_id:
+            return candidate
+    if requested_name:
+        config = db.find_yunxiao_project_config(requested_name)
+        if config:
+            return config
+    return None
+
+
+def _project_selection_message(selection: dict[str, Any]) -> str:
+    """生成人工选择项目时的错误提示。"""
+    document_project_name = _clean_text(selection.get("documentProjectName"))
+    candidates = selection.get("candidates") if isinstance(selection.get("candidates"), list) else []
+    names = [_clean_text(item.get("projectName")) for item in candidates if isinstance(item, dict)]
+    suffix = f" Candidates: {', '.join(name for name in names if name)}." if names else ""
+    return (
         "DingTalk document projectName is not configured in adapter_yunxiao_project_config: "
-        f"projectName={document_project_name}.{suffix}"
+        f"projectName={document_project_name}. Please choose a Yunxiao project to continue.{suffix}"
     )
 
 
@@ -334,6 +451,34 @@ def _available_yunxiao_project_names() -> list[str]:
         if name and name not in names:
             names.append(name)
     return names
+
+
+def _yunxiao_project_candidates(document_project_name: str) -> list[dict[str, Any]]:
+    """根据文档项目名给出云效项目候选。"""
+    configs = db.list_yunxiao_project_configs()
+    normalized_document = _normalize_project_name(document_project_name)
+    scored: list[tuple[int, int, dict[str, Any]]] = []
+    fallback: list[dict[str, Any]] = []
+    for index, config in enumerate(configs):
+        name = _clean_text(config.get("projectName"))
+        if not name:
+            continue
+        candidate = {
+            "projectName": name,
+            "projectId": _clean_text(config.get("projectId")),
+            "projectConfigId": config.get("projectConfigId"),
+            "remark": _clean_text(config.get("remark")),
+        }
+        fallback.append(candidate)
+        normalized_name = _normalize_project_name(name)
+        if normalized_document and normalized_document in normalized_name:
+            scored.append((0, index, candidate))
+        elif normalized_document and normalized_name in normalized_document:
+            scored.append((1, index, candidate))
+        elif normalized_document and any(char in normalized_name for char in normalized_document):
+            scored.append((2, index, candidate))
+    selected = [item for _, _, item in sorted(scored, key=lambda row: (row[0], row[1]))]
+    return selected[:10] if selected else fallback[:10]
 
 
 def _normalize_requirement_demand(demand: Any) -> dict[str, Any]:
@@ -691,6 +836,8 @@ def _load_workflow(workflow_id: str) -> dict[str, Any]:
 
 def _resolve_next_action(target_status: str) -> str:
     """内部辅助函数：解析下一步action。"""
+    if target_status == PROJECT_SELECTED_TARGET_STATUS:
+        return "POST /workflow/{workflow_id}/advance to create Yunxiao requirement/task"
     if target_status == "APIFOX_SYNCED":
         return "POST /workflow/{workflow_id}/advance to retry Yunxiao close/writeback"
     if target_status == "PIPELINE_SUCCESS":

@@ -186,43 +186,69 @@ class WorkflowP0Test(unittest.TestCase):
         self.assertEqual(requirement["demands"][0]["items"][0]["parentDemandIndex"], 1)
         self.assertEqual(requirement["demands"][0]["items"][0]["contentLines"][0], "创建一条学生信息")
 
-    def test_submit_requirement_rejects_unknown_document_project_and_lists_yunxiao_projects(self) -> None:
+    def test_submit_requirement_needs_human_when_document_project_requires_selection(self) -> None:
         from app.models import WorkflowRequirementRequest
-        from app.workflow import WorkflowError, submit_requirement
+        from app.workflow import submit_requirement
 
-        workflow = {"workflowId": "wf-test-project", "status": "DOC_READ", "context": {}}
+        workflow = {
+            "workflowId": "wf-test-project",
+            "status": "DOC_READ",
+            "context": {
+                "dingtalk": {
+                    "read": {
+                        "document": {
+                            "result": {
+                                "data": [
+                                    {
+                                        "blockType": "paragraph",
+                                        "paragraph": {"text": "项目名：园务"},
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            },
+        }
+        captured = {}
+
+        def fake_mark(**kwargs):
+            captured.update(kwargs)
+            return {**workflow, "status": "NEEDS_HUMAN", "lastError": kwargs["error"], "context": kwargs["context"]}
 
         with patch("app.workflow.db.find_workflow_instance", return_value=workflow), patch(
             "app.workflow.db.find_yunxiao_project_config", return_value=None
         ), patch(
             "app.workflow.db.list_yunxiao_project_configs",
             return_value=[
-                {"projectName": "01-校务系统"},
-                {"projectName": "02-园务系统"},
+                {"projectName": "01-校务系统", "projectId": "school"},
+                {"projectName": "02-园务系统", "projectId": "garden"},
             ],
-        ), patch("app.workflow.db.update_workflow_requirement") as update:
-            with self.assertRaises(WorkflowError) as raised:
-                submit_requirement(
-                    "wf-test-project",
-                    WorkflowRequirementRequest(
-                        documentTitle="需求模版.adoc",
-                        version="V1.0.0",
-                        extra={"sourceProjectName": "校务"},
-                        demands=[
-                            {
-                                "demandIndex": 1,
-                                "title": "需求一",
-                                "items": [{"itemIndex": 1, "title": "任务一", "parentDemandTitle": "需求一"}],
-                            }
-                        ],
-                    ),
-                )
+        ), patch("app.workflow.db.mark_workflow_needs_human", side_effect=fake_mark), patch(
+            "app.workflow.db.update_workflow_requirement"
+        ) as update:
+            result = submit_requirement(
+                "wf-test-project",
+                WorkflowRequirementRequest(
+                    documentTitle="需求模版.adoc",
+                    version="V1.0.0",
+                    extra={"sourceProjectName": "园务"},
+                    demands=[
+                        {
+                            "demandIndex": 1,
+                            "title": "需求一",
+                            "items": [{"itemIndex": 1, "title": "任务一", "parentDemandTitle": "需求一"}],
+                        }
+                    ],
+                ),
+            )
 
-        message = str(raised.exception)
-        self.assertIn("adapter_yunxiao_project_config", message)
-        self.assertIn("projectName=校务", message)
-        self.assertIn("01-校务系统", message)
-        self.assertIn("02-园务系统", message)
+        self.assertFalse(result["resolved"])
+        self.assertEqual(result["workflow"]["status"], "NEEDS_HUMAN")
+        self.assertEqual(captured["event_type"], "project_selection_required")
+        self.assertEqual(captured["context"]["projectSelection"]["documentProjectName"], "园务")
+        self.assertEqual(captured["context"]["projectSelection"]["candidates"][0]["projectName"], "02-园务系统")
+        self.assertIn("targetStatus=PROJECT_SELECTED", result["nextAction"])
         update.assert_not_called()
 
     def test_submit_requirement_rejects_when_structured_project_differs_from_dingtalk_read(self) -> None:
@@ -418,6 +444,57 @@ class WorkflowP0Test(unittest.TestCase):
         self.assertEqual(result["workflow"]["status"], "APIFOX_SYNCED")
         self.assertEqual(captured["target_status"], "APIFOX_SYNCED")
         self.assertIn("retry Yunxiao close", result["nextAction"])
+
+    def test_resolve_project_selected_restores_requirement_parsed(self) -> None:
+        from app.models import WorkflowResolveRequest
+        from app.workflow import resolve_workflow
+
+        workflow = {
+            "workflowId": "wf-test-project",
+            "status": "NEEDS_HUMAN",
+            "context": {
+                "requirement": {
+                    "summary": "园务需求",
+                    "extra": {"documentProjectName": "园务", "sourceProjectName": "园务"},
+                },
+                "projectSelection": {
+                    "documentProjectName": "园务",
+                    "candidates": [
+                        {"projectName": "02-园务系统", "projectId": "garden", "projectConfigId": 2},
+                    ],
+                },
+            },
+        }
+        captured = {}
+
+        def fake_resolve(**kwargs):
+            captured.update(kwargs)
+            return {**workflow, "status": kwargs["target_status"], "lastError": None, "context": kwargs["context"]}
+
+        with patch("app.workflow.db.find_workflow_instance", return_value=workflow), patch(
+            "app.workflow.db.resolve_workflow_needs_human", side_effect=fake_resolve
+        ):
+            result = resolve_workflow(
+                "wf-test-project",
+                WorkflowResolveRequest(
+                    operator="jzm",
+                    targetStatus="PROJECT_SELECTED",
+                    projectName="02-园务系统",
+                    reason="确认园务项目",
+                ),
+            )
+
+        self.assertTrue(result["resolved"])
+        self.assertEqual(result["workflow"]["status"], "REQUIREMENT_PARSED")
+        self.assertEqual(captured["target_status"], "REQUIREMENT_PARSED")
+        self.assertEqual(captured["context"]["projectName"], "02-园务系统")
+        self.assertEqual(captured["context"]["sourceProjectName"], "园务")
+        self.assertTrue(captured["context"]["projectSelection"]["resolved"])
+        self.assertEqual(
+            captured["context"]["requirement"]["extra"]["selectedYunxiaoProjectName"],
+            "02-园务系统",
+        )
+        self.assertIn("advance", result["nextAction"])
 
     def test_resolve_rejects_unsupported_target(self) -> None:
         from app.models import WorkflowResolveRequest

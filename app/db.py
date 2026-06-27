@@ -1281,6 +1281,7 @@ def mark_workflow_needs_human(
     operator: str | None,
     event_type: str,
     event_payload: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """标记工作流needs人工。"""
     _require_configured()
@@ -1288,17 +1289,31 @@ def mark_workflow_needs_human(
     clipped_error = str(error or "")[:2048]
     with connect() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                UPDATE adapter_workflow_instance
-                SET status = 'NEEDS_HUMAN',
-                    last_error = %s,
-                    retry_count = retry_count + 1
-                WHERE workflow_id = %s
-                  AND status = %s
-                """,
-                (clipped_error, workflow_id, from_status),
-            )
+            if context is None:
+                cursor.execute(
+                    """
+                    UPDATE adapter_workflow_instance
+                    SET status = 'NEEDS_HUMAN',
+                        last_error = %s,
+                        retry_count = retry_count + 1
+                    WHERE workflow_id = %s
+                      AND status = %s
+                    """,
+                    (clipped_error, workflow_id, from_status),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE adapter_workflow_instance
+                    SET status = 'NEEDS_HUMAN',
+                        context_json = %s,
+                        last_error = %s,
+                        retry_count = retry_count + 1
+                    WHERE workflow_id = %s
+                      AND status = %s
+                    """,
+                    (dumps(context), clipped_error, workflow_id, from_status),
+                )
             if cursor.rowcount != 1:
                 raise ValueError(f"Workflow status changed before NEEDS_HUMAN mark: {workflow_id}")
             _insert_workflow_event(
@@ -1324,6 +1339,7 @@ def resolve_workflow_needs_human(
     operator: str | None,
     reason: str | None,
     event_payload: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """解析工作流needs人工。"""
     _require_configured()
@@ -1331,16 +1347,29 @@ def resolve_workflow_needs_human(
     clipped_reason = str(reason or "Workflow manually resolved")[:1024]
     with connect() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(
-                """
-                UPDATE adapter_workflow_instance
-                SET status = %s,
-                    last_error = NULL
-                WHERE workflow_id = %s
-                  AND status = 'NEEDS_HUMAN'
-                """,
-                (target_status, workflow_id),
-            )
+            if context is None:
+                cursor.execute(
+                    """
+                    UPDATE adapter_workflow_instance
+                    SET status = %s,
+                        last_error = NULL
+                    WHERE workflow_id = %s
+                      AND status = 'NEEDS_HUMAN'
+                    """,
+                    (target_status, workflow_id),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE adapter_workflow_instance
+                    SET status = %s,
+                        context_json = %s,
+                        last_error = NULL
+                    WHERE workflow_id = %s
+                      AND status = 'NEEDS_HUMAN'
+                    """,
+                    (target_status, dumps(context), workflow_id),
+                )
             if cursor.rowcount != 1:
                 raise ValueError(f"Workflow status is not NEEDS_HUMAN: {workflow_id}")
             _insert_workflow_event(
