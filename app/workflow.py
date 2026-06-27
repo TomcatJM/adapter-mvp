@@ -165,6 +165,7 @@ def submit_requirement(workflow_id: str, request: WorkflowRequirementRequest) ->
     requirement_summary = _derive_requirement_summary(request)
     demands = [_normalize_requirement_demand(demand) for demand in request.demands]
     demands = _apply_trusted_dingtalk_owner_names(workflow, demands)
+    demands = _apply_trusted_dingtalk_task_content_lines(workflow, demands)
     requirement = {
         "summary": requirement_summary,
         "documentTitle": _clean_text(request.document_title),
@@ -302,14 +303,32 @@ def _apply_trusted_dingtalk_owner_names(workflow: dict[str, Any], demands: list[
     return normalized_demands
 
 
+def _apply_trusted_dingtalk_task_content_lines(
+    workflow: dict[str, Any], demands: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """从钉钉原文回填任务主要内容，避免任务描述显示为未提供。"""
+    task_content_lines = _trusted_dingtalk_task_content_lines(workflow)
+    if not task_content_lines:
+        return demands
+    normalized_demands: list[dict[str, Any]] = []
+    for demand in demands:
+        copied_demand = dict(demand)
+        items: list[dict[str, Any]] = []
+        for item in demand.get("items") or []:
+            copied_item = dict(item)
+            title = _clean_text(copied_item.get("title"))
+            trusted_lines = task_content_lines.get(_normalize_project_name(title))
+            if trusted_lines:
+                copied_item["contentLines"] = trusted_lines
+            items.append(copied_item)
+        copied_demand["items"] = items
+        normalized_demands.append(copied_demand)
+    return normalized_demands
+
+
 def _trusted_dingtalk_task_owners(workflow: dict[str, Any]) -> dict[str, str]:
     """从 Adapter 已读取的钉钉原文中提取任务标题到负责人的映射。"""
-    context = workflow.get("context") if isinstance(workflow.get("context"), dict) else {}
-    dingtalk = context.get("dingtalk") if isinstance(context.get("dingtalk"), dict) else {}
-    read = dingtalk.get("read") if isinstance(dingtalk.get("read"), dict) else {}
-    document = read.get("document") if isinstance(read.get("document"), dict) else {}
-    result = document.get("result") if isinstance(document.get("result"), dict) else {}
-    data = result.get("data") if isinstance(result.get("data"), list) else []
+    data = _dingtalk_read_blocks(workflow)
     owners: dict[str, str] = {}
     current_task_title = ""
     for block in data:
@@ -332,6 +351,64 @@ def _trusted_dingtalk_task_owners(workflow: dict[str, Any]) -> dict[str, str]:
         if owner:
             owners.setdefault(_normalize_project_name(current_task_title), owner)
     return owners
+
+
+def _trusted_dingtalk_task_content_lines(workflow: dict[str, Any]) -> dict[str, list[str]]:
+    """从 Adapter 已读取的钉钉原文中提取任务标题到主要内容的映射。"""
+    data = _dingtalk_read_blocks(workflow)
+    content_lines: dict[str, list[str]] = {}
+    current_task_title = ""
+    collecting_content = False
+    for block in data:
+        if not isinstance(block, dict):
+            continue
+        heading = block.get("heading") if isinstance(block.get("heading"), dict) else {}
+        paragraph = block.get("paragraph") if isinstance(block.get("paragraph"), dict) else {}
+        if heading:
+            title = _clean_task_heading_text(heading.get("text"))
+            level = _clean_text(heading.get("level"))
+            if title and level in {"heading-5", "5"}:
+                current_task_title = title
+                collecting_content = False
+            elif level in {"heading-4", "4"}:
+                current_task_title = ""
+                collecting_content = False
+            continue
+        text = _clean_text(paragraph.get("text")) if paragraph else ""
+        if not current_task_title or not text:
+            continue
+        content_label = _task_content_label_value(text)
+        if content_label is not None:
+            collecting_content = True
+            if content_label:
+                content_lines.setdefault(_normalize_project_name(current_task_title), []).append(content_label)
+            continue
+        if _extract_labeled_value(text, "负责人"):
+            continue
+        if collecting_content:
+            content_lines.setdefault(_normalize_project_name(current_task_title), []).append(text)
+    return content_lines
+
+
+def _dingtalk_read_blocks(workflow: dict[str, Any]) -> list[Any]:
+    """读取 Adapter 已缓存的钉钉文档块。"""
+    context = workflow.get("context") if isinstance(workflow.get("context"), dict) else {}
+    dingtalk = context.get("dingtalk") if isinstance(context.get("dingtalk"), dict) else {}
+    read = dingtalk.get("read") if isinstance(dingtalk.get("read"), dict) else {}
+    document = read.get("document") if isinstance(read.get("document"), dict) else {}
+    result = document.get("result") if isinstance(document.get("result"), dict) else {}
+    return result.get("data") if isinstance(result.get("data"), list) else []
+
+
+def _task_content_label_value(text: str) -> str | None:
+    """提取主要内容标签后的正文；只有标签无正文时返回空字符串。"""
+    text = _clean_text(text) or ""
+    if text == "主要内容":
+        return ""
+    match = re.match(r"^\s*主要内容\s*[：:]\s*(.*)$", text)
+    if not match:
+        return None
+    return _clean_text(match.group(1)) or ""
 
 
 def _clean_task_heading_text(value: Any) -> str:
