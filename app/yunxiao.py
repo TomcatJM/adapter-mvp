@@ -1955,27 +1955,8 @@ def _build_requirement_task_description(
     item: dict[str, Any],
     operator: str | None,
 ) -> str:
-    """内部辅助函数：构建requirement任务描述。"""
-    lines = [
-        "来源：钉钉需求文档",
-        f"Workflow：{workflow.get('workflowId') or ''}",
-        f"钉钉链接：{workflow.get('dingtalkUrl') or ''}",
-        f"需求键：{workflow.get('requirementKey') or ''}",
-        f"所属需求：{_clean_text(demand.get('title')) or ''}",
-        f"任务标题：{_clean_text(item.get('title')) or ''}",
-        f"负责人：{_clean_text(item.get('ownerName')) or '未提供'}",
-        f"操作人：{operator or ''}",
-        "",
-        "需求描述：",
-        _clean_text(demand.get("description")) or "未提供",
-        "",
-        "主要内容：",
-        _format_task_content_lines(item.get("contentLines")),
-        "",
-        "需求摘要：",
-        _clean_text(demand.get("title")) or "",
-    ]
-    return _clip(_sanitize("\n".join(lines)), 12000)
+    """构建云效任务描述：只展示钉钉文档中该任务的主要内容。"""
+    return _clip(_sanitize(_format_task_content_lines(item.get("contentLines"))), 12000)
 
 
 def _format_requirement_demands(value: Any) -> str:
@@ -2033,8 +2014,8 @@ def _format_requirement_task_list(value: Any) -> str:
 def _format_task_content_lines(value: Any) -> str:
     """内部辅助函数：format任务contentlines。"""
     if not isinstance(value, list) or not value:
-        return "- 未提供"
-    return "\n".join(f"- {_clip(_sanitize(str(item)), 500)}" for item in value if item not in (None, ""))
+        return "未提供"
+    return "\n".join(_clip(_sanitize(str(item)), 500) for item in value if item not in (None, ""))
 
 
 def _format_list(value: Any) -> str:

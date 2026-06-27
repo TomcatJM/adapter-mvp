@@ -447,7 +447,7 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
         self.assertEqual(result["demands"][0]["workitemTypeIdentifier"], "type-req")
         self.assertEqual(result["demands"][0]["items"][0]["category"], "Task")
         self.assertEqual(result["demands"][0]["items"][0]["workitemTypeIdentifier"], "type-task")
-        self.assertIn("主要内容：", captured[1]["payload"]["description"])
+        self.assertEqual(captured[1]["payload"]["description"], "创建一条学生信息\n姓名必填\n手机号必填")
 
     def test_create_workitem_tree_requires_task_workitem_type_for_items(self) -> None:
         from app.yunxiao import YunxiaoError, create_yunxiao_workitem
@@ -471,7 +471,7 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
 
         self.assertIn("Yunxiao task workitem type is missing", str(raised.exception))
 
-    def test_task_description_uses_current_demand_as_summary(self) -> None:
+    def test_task_description_only_uses_task_content_lines(self) -> None:
         from app.yunxiao import _build_requirement_task_description
 
         workflow = _workflow()
@@ -490,9 +490,16 @@ class YunxiaoWorkitemCreateTest(unittest.TestCase):
 
         description = _build_requirement_task_description(workflow, requirement, demand, item, "codex")
 
-        self.assertIn("所属需求：需求二", description)
-        self.assertIn("需求摘要：\n需求二", description)
-        self.assertNotIn("需求摘要：\n需求一", description)
+        self.assertEqual(description, "新建跟进记录22222\n类型、内容必填2222")
+        self.assertNotIn("所属需求", description)
+        self.assertNotIn("需求摘要", description)
+
+    def test_task_description_falls_back_to_unprovided_when_content_missing(self) -> None:
+        from app.yunxiao import _build_requirement_task_description
+
+        description = _build_requirement_task_description(_workflow(), {}, {"title": "需求二"}, {"title": "任务二"}, "codex")
+
+        self.assertEqual(description, "未提供")
 
     def test_demand_description_uses_current_demand_as_summary(self) -> None:
         from app.yunxiao import _build_requirement_demand_description
