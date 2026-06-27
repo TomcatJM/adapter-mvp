@@ -277,7 +277,8 @@ def _validate_document_project_name(workflow: dict[str, Any], requirement: dict[
 def _apply_trusted_dingtalk_owner_names(workflow: dict[str, Any], demands: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """从钉钉原文回填任务负责人，避免结构化漏掉 ownerName 后落到默认负责人。"""
     task_owners = _trusted_dingtalk_task_owners(workflow)
-    if not task_owners:
+    task_owners_by_position = _trusted_dingtalk_task_owners_by_position(workflow)
+    if not task_owners and not task_owners_by_position:
         return demands
     normalized_demands: list[dict[str, Any]] = []
     for demand in demands:
@@ -286,7 +287,8 @@ def _apply_trusted_dingtalk_owner_names(workflow: dict[str, Any], demands: list[
         for item in demand.get("items") or []:
             copied_item = dict(item)
             title = _clean_text(copied_item.get("title"))
-            trusted_owner = task_owners.get(_normalize_project_name(title))
+            position_key = _task_position_key(copied_demand.get("demandIndex"), copied_item.get("itemIndex"))
+            trusted_owner = task_owners.get(_normalize_project_name(title)) or task_owners_by_position.get(position_key)
             submitted_owner = _clean_text(copied_item.get("ownerName"))
             if trusted_owner and submitted_owner:
                 if _normalize_project_name(trusted_owner) != _normalize_project_name(submitted_owner):
@@ -308,7 +310,8 @@ def _apply_trusted_dingtalk_task_content_lines(
 ) -> list[dict[str, Any]]:
     """从钉钉原文回填任务主要内容，避免任务描述显示为未提供。"""
     task_content_lines = _trusted_dingtalk_task_content_lines(workflow)
-    if not task_content_lines:
+    task_content_lines_by_position = _trusted_dingtalk_task_content_lines_by_position(workflow)
+    if not task_content_lines and not task_content_lines_by_position:
         return demands
     normalized_demands: list[dict[str, Any]] = []
     for demand in demands:
@@ -317,7 +320,10 @@ def _apply_trusted_dingtalk_task_content_lines(
         for item in demand.get("items") or []:
             copied_item = dict(item)
             title = _clean_text(copied_item.get("title"))
-            trusted_lines = task_content_lines.get(_normalize_project_name(title))
+            position_key = _task_position_key(copied_demand.get("demandIndex"), copied_item.get("itemIndex"))
+            trusted_lines = task_content_lines.get(_normalize_project_name(title)) or task_content_lines_by_position.get(
+                position_key
+            )
             if trusted_lines:
                 copied_item["contentLines"] = trusted_lines
             items.append(copied_item)
@@ -328,35 +334,47 @@ def _apply_trusted_dingtalk_task_content_lines(
 
 def _trusted_dingtalk_task_owners(workflow: dict[str, Any]) -> dict[str, str]:
     """从 Adapter 已读取的钉钉原文中提取任务标题到负责人的映射。"""
-    data = _dingtalk_read_blocks(workflow)
-    owners: dict[str, str] = {}
-    current_task_title = ""
-    for block in data:
-        if not isinstance(block, dict):
-            continue
-        heading = block.get("heading") if isinstance(block.get("heading"), dict) else {}
-        paragraph = block.get("paragraph") if isinstance(block.get("paragraph"), dict) else {}
-        if heading:
-            title = _clean_task_heading_text(heading.get("text"))
-            level = _clean_text(heading.get("level"))
-            if title and level in {"heading-5", "5"}:
-                current_task_title = title
-            elif level in {"heading-4", "4"}:
-                current_task_title = ""
-            continue
-        text = _clean_text(paragraph.get("text")) if paragraph else ""
-        if not current_task_title or not text:
-            continue
-        owner = _extract_labeled_value(text, "负责人")
-        if owner:
-            owners.setdefault(_normalize_project_name(current_task_title), owner)
-    return owners
+    return {
+        _normalize_project_name(record["title"]): record["ownerName"]
+        for record in _trusted_dingtalk_task_records(workflow)
+        if record.get("title") and record.get("ownerName")
+    }
+
+
+def _trusted_dingtalk_task_owners_by_position(workflow: dict[str, Any]) -> dict[str, str]:
+    """从 Adapter 已读取的钉钉原文中按需求序号和任务序号提取负责人。"""
+    return {
+        _task_position_key(record.get("demandIndex"), record.get("itemIndex")): record["ownerName"]
+        for record in _trusted_dingtalk_task_records(workflow)
+        if record.get("ownerName")
+    }
 
 
 def _trusted_dingtalk_task_content_lines(workflow: dict[str, Any]) -> dict[str, list[str]]:
     """从 Adapter 已读取的钉钉原文中提取任务标题到主要内容的映射。"""
+    return {
+        _normalize_project_name(record["title"]): record["contentLines"]
+        for record in _trusted_dingtalk_task_records(workflow)
+        if record.get("title") and record.get("contentLines")
+    }
+
+
+def _trusted_dingtalk_task_content_lines_by_position(workflow: dict[str, Any]) -> dict[str, list[str]]:
+    """从 Adapter 已读取的钉钉原文中按需求序号和任务序号提取主要内容。"""
+    return {
+        _task_position_key(record.get("demandIndex"), record.get("itemIndex")): record["contentLines"]
+        for record in _trusted_dingtalk_task_records(workflow)
+        if record.get("contentLines")
+    }
+
+
+def _trusted_dingtalk_task_records(workflow: dict[str, Any]) -> list[dict[str, Any]]:
+    """从 Adapter 已读取的钉钉原文中提取任务结构记录。"""
     data = _dingtalk_read_blocks(workflow)
-    content_lines: dict[str, list[str]] = {}
+    records: list[dict[str, Any]] = []
+    current_record: dict[str, Any] | None = None
+    current_demand_index = 0
+    current_item_index = 0
     current_task_title = ""
     collecting_content = False
     for block in data:
@@ -368,26 +386,40 @@ def _trusted_dingtalk_task_content_lines(workflow: dict[str, Any]) -> dict[str, 
             title = _clean_task_heading_text(heading.get("text"))
             level = _clean_text(heading.get("level"))
             if title and level in {"heading-5", "5"}:
+                current_item_index += 1
                 current_task_title = title
+                current_record = {
+                    "demandIndex": current_demand_index or None,
+                    "itemIndex": current_item_index,
+                    "title": title,
+                    "ownerName": None,
+                    "contentLines": [],
+                }
+                records.append(current_record)
                 collecting_content = False
             elif level in {"heading-4", "4"}:
+                current_demand_index += 1
+                current_item_index = 0
                 current_task_title = ""
+                current_record = None
                 collecting_content = False
             continue
         text = _clean_text(paragraph.get("text")) if paragraph else ""
-        if not current_task_title or not text:
+        if not current_task_title or not current_record or not text:
+            continue
+        owner = _extract_labeled_value(text, "负责人")
+        if owner:
+            current_record["ownerName"] = owner
             continue
         content_label = _task_content_label_value(text)
         if content_label is not None:
             collecting_content = True
             if content_label:
-                content_lines.setdefault(_normalize_project_name(current_task_title), []).append(content_label)
-            continue
-        if _extract_labeled_value(text, "负责人"):
+                current_record["contentLines"].append(content_label)
             continue
         if collecting_content:
-            content_lines.setdefault(_normalize_project_name(current_task_title), []).append(text)
-    return content_lines
+            current_record["contentLines"].append(text)
+    return records
 
 
 def _dingtalk_read_blocks(workflow: dict[str, Any]) -> list[Any]:
@@ -409,6 +441,11 @@ def _task_content_label_value(text: str) -> str | None:
     if not match:
         return None
     return _clean_text(match.group(1)) or ""
+
+
+def _task_position_key(demand_index: Any, item_index: Any) -> str:
+    """构建需求序号和任务序号匹配键。"""
+    return f"{_clean_text(demand_index) or ''}:{_clean_text(item_index) or ''}"
 
 
 def _clean_task_heading_text(value: Any) -> str:
