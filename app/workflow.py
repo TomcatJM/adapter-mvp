@@ -336,9 +336,9 @@ def _trusted_dingtalk_task_owners(workflow: dict[str, Any]) -> dict[str, str]:
 
 def _clean_task_heading_text(value: Any) -> str:
     """清理钉钉任务标题中的序号。"""
-    text = _clean_text(value)
+    text = _clean_text(value) or ""
     text = re.sub(r"^\s*\d+\s*[.．、]\s*", "", text)
-    return _clean_text(text.rstrip("：:"))
+    return _clean_text(text.rstrip("：:")) or ""
 
 
 def _resolve_project_selection(workflow: dict[str, Any], request: WorkflowResolveRequest) -> dict[str, Any]:
