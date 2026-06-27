@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+import re
 from typing import Any
 
 from app import db
@@ -219,7 +220,16 @@ def _derive_requirement_summary(request: WorkflowRequirementRequest) -> str:
 
 def _validate_document_project_name(workflow: dict[str, Any], requirement: dict[str, Any]) -> dict[str, Any]:
     """校验钉钉文档项目名必须来自云效项目配置。"""
-    document_project_name = _document_project_name(workflow, requirement)
+    trusted_document_project_name = _trusted_dingtalk_document_project_name(workflow)
+    submitted_document_project_name = _submitted_document_project_name(requirement)
+    if trusted_document_project_name and submitted_document_project_name:
+        if _normalize_project_name(trusted_document_project_name) != _normalize_project_name(submitted_document_project_name):
+            raise WorkflowError(
+                "DingTalk document projectName mismatch: "
+                f"readProjectName={trusted_document_project_name}, submittedProjectName={submitted_document_project_name}. "
+                "Use the projectName from the Adapter DingTalk read result and do not infer from old context."
+            )
+    document_project_name = trusted_document_project_name or submitted_document_project_name or _context_project_name(workflow)
     if not document_project_name:
         return {}
     project_config = db.find_yunxiao_project_config(document_project_name)
@@ -239,9 +249,13 @@ def _validate_document_project_name(workflow: dict[str, Any], requirement: dict[
 
 def _document_project_name(workflow: dict[str, Any], requirement: dict[str, Any]) -> str:
     """提取钉钉文档中声明的项目名。"""
+    return _trusted_dingtalk_document_project_name(workflow) or _submitted_document_project_name(requirement) or _context_project_name(workflow)
+
+
+def _submitted_document_project_name(requirement: dict[str, Any]) -> str:
+    """提取结构化提交里的项目名。"""
     extra = requirement.get("extra") if isinstance(requirement.get("extra"), dict) else {}
-    context = workflow.get("context") if isinstance(workflow.get("context"), dict) else {}
-    for source in (extra, requirement, context):
+    for source in (extra, requirement):
         if not isinstance(source, dict):
             continue
         for key in (
@@ -256,6 +270,60 @@ def _document_project_name(workflow: dict[str, Any], requirement: dict[str, Any]
             if value:
                 return value
     return ""
+
+
+def _context_project_name(workflow: dict[str, Any]) -> str:
+    """提取 workflow 上下文里的项目名。"""
+    context = workflow.get("context") if isinstance(workflow.get("context"), dict) else {}
+    for key in ("sourceProjectName", "documentProjectName", "projectName", "project_name"):
+        value = _clean_text(context.get(key))
+        if value:
+            return value
+    return ""
+
+
+def _trusted_dingtalk_document_project_name(workflow: dict[str, Any]) -> str:
+    """从 Adapter 已读取的钉钉原文中提取项目名，作为服务端可信来源。"""
+    context = workflow.get("context") if isinstance(workflow.get("context"), dict) else {}
+    dingtalk = context.get("dingtalk") if isinstance(context.get("dingtalk"), dict) else {}
+    read = dingtalk.get("read") if isinstance(dingtalk.get("read"), dict) else {}
+    document = read.get("document") if isinstance(read.get("document"), dict) else {}
+    for text in _dingtalk_document_texts(document):
+        value = _extract_labeled_value(text, "项目名")
+        if value:
+            return value
+    return ""
+
+
+def _dingtalk_document_texts(document: dict[str, Any]) -> list[str]:
+    """提取钉钉文档块文本。"""
+    result = document.get("result") if isinstance(document.get("result"), dict) else {}
+    data = result.get("data") if isinstance(result.get("data"), list) else []
+    texts: list[str] = []
+    for block in data:
+        if not isinstance(block, dict):
+            continue
+        for key in ("paragraph", "heading"):
+            value = block.get(key)
+            if isinstance(value, dict):
+                text = _clean_text(value.get("text"))
+                if text:
+                    texts.append(text)
+    return texts
+
+
+def _extract_labeled_value(text: str, label: str) -> str:
+    """提取形如 `项目名：园务` 的字段值。"""
+    raw = _clean_text(text)
+    if not raw:
+        return ""
+    match = re.match(rf"^\s*{re.escape(label)}\s*[:：]\s*(.+?)\s*$", raw)
+    return _clean_text(match.group(1)) if match else ""
+
+
+def _normalize_project_name(value: str) -> str:
+    """归一化项目名用于一致性校验。"""
+    return re.sub(r"\s+", "", str(value or "").strip()).lower()
 
 
 def _available_yunxiao_project_names() -> list[str]:

@@ -225,6 +225,109 @@ class WorkflowP0Test(unittest.TestCase):
         self.assertIn("02-园务系统", message)
         update.assert_not_called()
 
+    def test_submit_requirement_rejects_when_structured_project_differs_from_dingtalk_read(self) -> None:
+        from app.models import WorkflowRequirementRequest
+        from app.workflow import WorkflowError, submit_requirement
+
+        workflow = {
+            "workflowId": "wf-test-project",
+            "status": "DOC_READ",
+            "context": {
+                "dingtalk": {
+                    "read": {
+                        "document": {
+                            "result": {
+                                "data": [
+                                    {
+                                        "blockType": "paragraph",
+                                        "paragraph": {"text": "项目名：园务"},
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            },
+        }
+
+        with patch("app.workflow.db.find_workflow_instance", return_value=workflow), patch(
+            "app.workflow.db.update_workflow_requirement"
+        ) as update:
+            with self.assertRaises(WorkflowError) as raised:
+                submit_requirement(
+                    "wf-test-project",
+                    WorkflowRequirementRequest(
+                        documentTitle="需求模版.adoc",
+                        version="V1.0.0",
+                        extra={"sourceProjectName": "校务"},
+                        demands=[
+                            {
+                                "demandIndex": 1,
+                                "title": "需求一",
+                                "items": [{"itemIndex": 1, "title": "任务一", "parentDemandTitle": "需求一"}],
+                            }
+                        ],
+                    ),
+                )
+
+        message = str(raised.exception)
+        self.assertIn("projectName mismatch", message)
+        self.assertIn("readProjectName=园务", message)
+        self.assertIn("submittedProjectName=校务", message)
+        update.assert_not_called()
+
+    def test_submit_requirement_uses_dingtalk_read_project_name_before_stale_context(self) -> None:
+        from app.models import WorkflowRequirementRequest
+        from app.workflow import submit_requirement
+
+        workflow = {
+            "workflowId": "wf-test-project",
+            "status": "DOC_READ",
+            "context": {
+                "projectName": "01-校务系统",
+                "dingtalk": {
+                    "read": {
+                        "document": {
+                            "result": {
+                                "data": [
+                                    {
+                                        "blockType": "paragraph",
+                                        "paragraph": {"text": "项目名：02-园务系统"},
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                },
+            },
+        }
+
+        def fake_update(**kwargs):
+            return {**workflow, "status": "REQUIREMENT_PARSED", "context": kwargs["context"]}
+
+        with patch("app.workflow.db.find_workflow_instance", return_value=workflow), patch(
+            "app.workflow.db.find_yunxiao_project_config",
+            return_value={"projectName": "02-园务系统", "projectConfigId": 10},
+        ), patch("app.workflow.db.update_workflow_requirement", side_effect=fake_update):
+            result = submit_requirement(
+                "wf-test-project",
+                WorkflowRequirementRequest(
+                    documentTitle="需求模版.adoc",
+                    version="V1.0.0",
+                    demands=[
+                        {
+                            "demandIndex": 1,
+                            "title": "需求一",
+                            "items": [{"itemIndex": 1, "title": "任务一", "parentDemandTitle": "需求一"}],
+                        }
+                    ],
+                ),
+            )
+
+        context = result["workflow"]["context"]
+        self.assertEqual(context["projectName"], "02-园务系统")
+        self.assertEqual(context["sourceProjectName"], "02-园务系统")
+
     def test_submit_requirement_uses_document_project_from_yunxiao_project_config(self) -> None:
         from app.models import WorkflowRequirementRequest
         from app.workflow import submit_requirement
