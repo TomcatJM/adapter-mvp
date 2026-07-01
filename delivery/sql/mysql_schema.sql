@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS adapter_apifox_project_config (
     account_config_id BIGINT NULL COMMENT 'Apifox账号配置主键ID，关联adapter_apifox_account_config.id',
     apifox_project_id VARCHAR(64) NOT NULL COMMENT 'Apifox项目ID',
     openapi_url VARCHAR(2048) NULL COMMENT '项目专属OpenAPI地址',
+    import_delay_seconds INT NOT NULL DEFAULT 0 COMMENT 'Apifox导入前等待秒数，用于等待Java服务部署稳定',
     remark VARCHAR(512) NULL COMMENT '备注',
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP

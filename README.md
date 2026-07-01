@@ -502,7 +502,7 @@ POST http://47.116.102.238:18080/callbacks/yunxiao/flow-event/public
 
 ```text
 statusCode=FAIL/ERROR/CANCELED/UNKNOWN -> CI/CD Agent 分析失败日志
-statusCode=SUCCESS/FINISH -> Adapter 判断 Apifox 项目并导入 OpenAPI
+statusCode=SUCCESS/FINISH -> Adapter 判断 Apifox 项目，等待部署稳定后导入 OpenAPI
 其它状态 -> 忽略
 ```
 
@@ -533,20 +533,35 @@ Adapter 选择 OpenAPI 来源的优先级：
 
 ```text
 APIFOX_AUTO_IMPORT=false
+APIFOX_IMPORT_DELAY_SECONDS=0
 ```
 
 只有 Adapter 服务环境中配置：
 
 ```text
 APIFOX_AUTO_IMPORT=true
-APIFOX_ACCESS_TOKEN=...
 ADAPTER_DB_HOST=...
 ADAPTER_DB_NAME=...
 ADAPTER_DB_USER=...
 ADAPTER_DB_PASSWORD=...
 ```
 
-才会真实调用 Apifox。否则成功事件只会写 `apifox_import` 审计，状态为 `SKIPPED`。
+并在 DB 中维护 `adapter_apifox_account_config`、`adapter_apifox_project_config`、`adapter_apifox_pipeline_config` 后，才会真实调用 Apifox。`APIFOX_ACCESS_TOKEN` 仅作为历史兜底，推荐放入 `adapter_apifox_account_config`。
+
+Java 服务的流水线成功不代表新镜像已经在云端完全启动。为了避免 Apifox 立即拉取到旧 OpenAPI，推荐在 `adapter_apifox_project_config.import_delay_seconds` 配置部署稳定等待时间：
+
+```text
+import_delay_seconds=180
+```
+
+环境变量仅作为兜底：
+
+```text
+APIFOX_IMPORT_DELAY_SECONDS=180
+APIFOX_<PROJECT_KEY>_IMPORT_DELAY_SECONDS=180
+```
+
+`PROJECT_KEY` 使用项目名归一化后的大写 key，例如 `jdb-crm` 对应 `JDB_CRM`。未配置时默认不等待。
 
 ### 17.1 固定网关 OpenAPI 地址模板
 
@@ -734,15 +749,20 @@ adapter_apifox_pipeline_config
 project_name       项目名称，例如 jdb-order
 apifox_project_id  Apifox 项目 ID，例如 7049238
 openapi_url        项目专属 OpenAPI JSON/YAML 直链；为空时走环境变量或全局模板
+import_delay_seconds Apifox 导入前等待秒数，例如 180；优先级高于环境变量
 remark             备注
 ```
 
 `adapter_apifox_pipeline_config` 字段：
 
 ```text
-pipeline_id   云效流水线 ID，例如 4989239
-project_name  项目名称，例如 jdb-school-gmc
-remark        备注
+pipeline_id               云效流水线 ID，例如 4989239
+pipeline_name             云效流水线名称，例如 jdb-school-gmc开发/UAT部署
+service_name              服务名，例如 jdb-school-gmc
+env_name                  环境名，例如 dev-uat
+repo_name                 仓库名，例如 jdb-school-gmc
+apifox_project_config_id  Apifox 项目配置主键 ID
+remark                    备注
 ```
 
 推荐维护方式：

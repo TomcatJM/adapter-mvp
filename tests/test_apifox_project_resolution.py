@@ -215,6 +215,80 @@ class ApifoxProjectResolutionTest(unittest.TestCase):
         self.assertNotIn("accessToken", result)
         self.assertEqual(import_openapi.call_args.args[0]["accessToken"], "db-token-for-test")
 
+    def test_waits_before_import_when_apifox_import_delay_is_configured(self) -> None:
+        os.environ["APIFOX_IMPORT_DELAY_SECONDS"] = "180"
+        payload = {
+            "task": {"pipelineId": "4437990", "statusCode": "SUCCESS"},
+            "sources": [],
+            "globalParams": [{"key": "PROJECT_NAME", "value": "adapter-mvp"}],
+        }
+        project_config = {
+            "projectName": "adapter-mvp",
+            "apifoxProjectId": "8460173",
+            "openapiUrl": "http://40.example.test:18080/openapi.json",
+        }
+
+        with patch("app.apifox._find_project_config", return_value=project_config), patch(
+            "app.apifox._preflight_openapi", return_value={"ok": True, "pathCount": 1}
+        ), patch("app.apifox.time.sleep") as sleep, patch(
+            "app.apifox._import_openapi", return_value={"statusCode": 201}
+        ) as import_openapi:
+            result = maybe_import_from_flow_event(payload)
+
+        sleep.assert_called_once_with(180)
+        import_openapi.assert_called_once()
+        self.assertTrue(result["imported"])
+        self.assertEqual(result["importDelaySeconds"], 180)
+
+    def test_db_project_config_import_delay_overrides_environment_delay(self) -> None:
+        os.environ["APIFOX_IMPORT_DELAY_SECONDS"] = "30"
+        payload = {
+            "task": {"pipelineId": "4437990", "statusCode": "SUCCESS"},
+            "sources": [],
+            "globalParams": [{"key": "PROJECT_NAME", "value": "adapter-mvp"}],
+        }
+        project_config = {
+            "projectName": "adapter-mvp",
+            "apifoxProjectId": "8460173",
+            "openapiUrl": "http://40.example.test:18080/openapi.json",
+            "importDelaySeconds": 180,
+        }
+
+        with patch("app.apifox._find_project_config", return_value=project_config), patch(
+            "app.apifox._preflight_openapi", return_value={"ok": True, "pathCount": 1}
+        ), patch("app.apifox.time.sleep") as sleep, patch(
+            "app.apifox._import_openapi", return_value={"statusCode": 201}
+        ):
+            result = maybe_import_from_flow_event(payload)
+
+        sleep.assert_called_once_with(180)
+        self.assertTrue(result["imported"])
+        self.assertEqual(result["importDelaySeconds"], 180)
+
+    def test_does_not_wait_when_apifox_import_delay_is_not_configured(self) -> None:
+        payload = {
+            "task": {"pipelineId": "4437990", "statusCode": "SUCCESS"},
+            "sources": [],
+            "globalParams": [{"key": "PROJECT_NAME", "value": "adapter-mvp"}],
+        }
+        project_config = {
+            "projectName": "adapter-mvp",
+            "apifoxProjectId": "8460173",
+            "openapiUrl": "http://40.example.test:18080/openapi.json",
+        }
+
+        with patch("app.apifox._find_project_config", return_value=project_config), patch(
+            "app.apifox._preflight_openapi", return_value={"ok": True, "pathCount": 1}
+        ), patch("app.apifox.time.sleep") as sleep, patch(
+            "app.apifox._import_openapi", return_value={"statusCode": 201}
+        ) as import_openapi:
+            result = maybe_import_from_flow_event(payload)
+
+        sleep.assert_not_called()
+        import_openapi.assert_called_once()
+        self.assertTrue(result["imported"])
+        self.assertEqual(result["importDelaySeconds"], 0)
+
     def test_missing_apifox_token_reports_account_config_hint(self) -> None:
         os.environ.pop("APIFOX_ACCESS_TOKEN", None)
         payload = {

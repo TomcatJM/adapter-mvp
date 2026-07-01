@@ -7,6 +7,7 @@ Example:
     --account-name apifox-main ^
     --apifox-project-id 7049238 ^
     --openapi-url https://micro-api-test.kidcastle.com.cn/gw/jdb-order/v3/api-docs ^
+    --import-delay-seconds 180 ^
     --remark 订单服务接口项目-流水线重新导入目标
 
 The script reads DB connection settings from environment variables and never
@@ -32,6 +33,7 @@ def main() -> None:
     parser.add_argument("--account-name", default="", help="Apifox账号配置名称，例如 apifox-main")
     parser.add_argument("--apifox-project-id", required=True, help="Apifox 项目 ID，例如 7049238")
     parser.add_argument("--openapi-url", default="", help="项目专属 OpenAPI JSON/YAML 直链")
+    parser.add_argument("--import-delay-seconds", type=int, default=0, help="Apifox导入前等待秒数，例如 180")
     parser.add_argument("--remark", default="", help="备注")
     args = parser.parse_args()
 
@@ -55,14 +57,16 @@ def main() -> None:
                     account_config_id,
                     apifox_project_id,
                     openapi_url,
+                    import_delay_seconds,
                     remark
                 )
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     account_name = COALESCE(VALUES(account_name), account_name),
                     account_config_id = COALESCE(VALUES(account_config_id), account_config_id),
                     apifox_project_id = VALUES(apifox_project_id),
                     openapi_url = VALUES(openapi_url),
+                    import_delay_seconds = VALUES(import_delay_seconds),
                     remark = VALUES(remark)
                 """,
                 (
@@ -71,6 +75,7 @@ def main() -> None:
                     account_config_id,
                     args.apifox_project_id,
                     args.openapi_url or None,
+                    max(args.import_delay_seconds, 0),
                     args.remark or None,
                 ),
             )

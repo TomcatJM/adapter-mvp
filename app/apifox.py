@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -42,6 +43,9 @@ def maybe_import_from_flow_event(payload: dict[str, Any]) -> dict[str, Any]:
     missing = [key for key in ("accessToken", "projectId", "openapiUrl") if not config.get(key)]
     if missing:
         return {"enabled": True, "imported": False, "reason": _missing_config_reason(config, missing), **safe_config}
+    delay_seconds = int(config.get("importDelaySeconds") or 0)
+    if delay_seconds > 0:
+        time.sleep(delay_seconds)
     if config["stripProjectPath"] and config.get("projectName"):
         preflight = _preflight_openapi(config["projectName"], config.get("upstreamOpenapiUrl"))
         if not preflight["ok"]:
@@ -145,6 +149,7 @@ def _resolve_config(payload: dict[str, Any]) -> dict[str, Any]:
         "locale": os.getenv("APIFOX_LOCALE", "zh-CN"),
         "accessToken": db_access_token or env_access_token,
         "accessTokenSource": "database_account" if db_access_token else ("environment" if env_access_token else "unresolved"),
+        "importDelaySeconds": _import_delay_seconds(project_key, project_config),
         "endpointOverwriteBehavior": os.getenv("APIFOX_ENDPOINT_OVERWRITE_BEHAVIOR", "OVERWRITE_EXISTING"),
         "schemaOverwriteBehavior": os.getenv("APIFOX_SCHEMA_OVERWRITE_BEHAVIOR", "KEEP_EXISTING"),
     }
@@ -455,3 +460,17 @@ def _openapi_url_from_template(project_name: str, project_key: str) -> str:
         "https://micro-api-test.kidcastle.com.cn/gw/{project}/v3/api-docs",
     )
     return template.format(project=project_name, projectKey=project_key, service=project_name)
+
+
+def _import_delay_seconds(project_key: str, project_config: dict[str, Any] | None = None) -> int:
+    """解析Apifox导入前等待秒数。"""
+    if project_config and project_config.get("importDelaySeconds") not in (None, ""):
+        return max(int(project_config["importDelaySeconds"]), 0)
+    raw = os.getenv(f"APIFOX_{project_key}_IMPORT_DELAY_SECONDS") or os.getenv("APIFOX_IMPORT_DELAY_SECONDS")
+    if not raw:
+        return 0
+    try:
+        delay = int(str(raw).strip())
+    except ValueError:
+        return 0
+    return max(delay, 0)

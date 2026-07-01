@@ -144,6 +144,7 @@ def ensure_schema() -> None:
                         account_config_id BIGINT NULL COMMENT 'Apifox账号配置主键ID，关联adapter_apifox_account_config.id',
                         apifox_project_id VARCHAR(64) NOT NULL COMMENT 'Apifox项目ID',
                         openapi_url VARCHAR(2048) NULL COMMENT '项目专属OpenAPI地址',
+                        import_delay_seconds INT NOT NULL DEFAULT 0 COMMENT 'Apifox导入前等待秒数，用于等待Java服务部署稳定',
                         remark VARCHAR(512) NULL COMMENT '备注',
                         created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
                         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -453,6 +454,8 @@ def _ensure_comments(cursor) -> None:
         "ALTER TABLE adapter_apifox_project_config MODIFY apifox_project_id VARCHAR(64) NOT NULL COMMENT 'Apifox项目ID'",
         "ALTER TABLE adapter_apifox_project_config ADD COLUMN openapi_url VARCHAR(2048) NULL COMMENT '项目专属OpenAPI地址' AFTER apifox_project_id",
         "ALTER TABLE adapter_apifox_project_config MODIFY openapi_url VARCHAR(2048) NULL COMMENT '项目专属OpenAPI地址'",
+        "ALTER TABLE adapter_apifox_project_config ADD COLUMN import_delay_seconds INT NOT NULL DEFAULT 0 COMMENT 'Apifox导入前等待秒数，用于等待Java服务部署稳定' AFTER openapi_url",
+        "ALTER TABLE adapter_apifox_project_config MODIFY import_delay_seconds INT NOT NULL DEFAULT 0 COMMENT 'Apifox导入前等待秒数，用于等待Java服务部署稳定'",
         "ALTER TABLE adapter_apifox_project_config MODIFY remark VARCHAR(512) NULL COMMENT '备注'",
         "ALTER TABLE adapter_apifox_project_config MODIFY created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'",
         "ALTER TABLE adapter_apifox_project_config MODIFY updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'",
@@ -1571,6 +1574,7 @@ def find_apifox_project_config(project_name: str) -> dict[str, Any] | None:
                         account.enabled AS account_enabled,
                         project.apifox_project_id,
                         project.openapi_url,
+                        project.import_delay_seconds,
                         project.remark
                     FROM adapter_apifox_project_config project
                     LEFT JOIN adapter_apifox_account_config account
@@ -1613,6 +1617,7 @@ def find_apifox_project_config_by_id(config_id: int | str | None) -> dict[str, A
                         account.enabled AS account_enabled,
                         project.apifox_project_id,
                         project.openapi_url,
+                        project.import_delay_seconds,
                         project.remark
                     FROM adapter_apifox_project_config project
                     LEFT JOIN adapter_apifox_account_config account
@@ -1686,7 +1691,7 @@ def list_apifox_project_configs() -> list[dict[str, Any]]:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
-                    SELECT id, project_name, account_name, account_config_id, apifox_project_id, openapi_url, remark
+                    SELECT id, project_name, account_name, account_config_id, apifox_project_id, openapi_url, import_delay_seconds, remark
                     FROM adapter_apifox_project_config
                     ORDER BY project_name
                     """
@@ -1700,6 +1705,7 @@ def list_apifox_project_configs() -> list[dict[str, Any]]:
                 "accountConfigId": row.get("account_config_id"),
                 "apifoxProjectId": row.get("apifox_project_id"),
                 "openapiUrl": row.get("openapi_url"),
+                "importDelaySeconds": row.get("import_delay_seconds"),
                 "remark": row.get("remark"),
             }
             for row in rows
@@ -1766,6 +1772,7 @@ def _apifox_project_config_from_row(row: dict[str, Any]) -> dict[str, Any]:
         "accessToken": row.get("access_token") if row.get("account_enabled") in (1, True) else None,
         "apifoxProjectId": row.get("apifox_project_id"),
         "openapiUrl": row.get("openapi_url"),
+        "importDelaySeconds": row.get("import_delay_seconds"),
         "remark": row.get("remark"),
     }
 
