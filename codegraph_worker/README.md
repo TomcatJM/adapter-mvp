@@ -64,10 +64,22 @@ explore
 uvicorn codegraph_worker.main:app --host 127.0.0.1 --port 18081
 ```
 
+Remote systemd install:
+
+```bash
+APP_DIR=/opt/codegraph-worker \
+CACHE_DIR=/opt/codegraph-cache \
+PORT=18081 \
+bash scripts/remote_install_codegraph_worker.sh
+```
+
+The installer requires `codegraph` and `ossutil` to be installed on the host
+before starting the service. It creates `/etc/adapter-mvp/codegraph-worker.env`
+on first install if the file does not already exist.
+
 ## Safety
 
 - Verifies `sha256.txt` before extracting an index archive.
 - Rejects unsafe archive paths.
 - Caches prepared indexes under `CODEGRAPH_WORKER_CACHE_ROOT`.
 - Does not print or store OSS credentials.
-
