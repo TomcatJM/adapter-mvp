@@ -24,6 +24,7 @@
 - 修改云效创建、关单、流水线绑定、Apifox 同步相关逻辑后，必须运行对应单测和 `compileall`。
 - 不允许打印 token、AK、密码、Authorization、cookie 或私钥。
 - 不允许用静默默认项目、默认 Apifox 项目、空迭代、空负责人掩盖配置缺失。
+- 本仓库后续所有 Git commit message 必须使用中文，不允许只使用英文提交信息。
 
 ## 推荐校验命令
 
