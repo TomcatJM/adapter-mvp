@@ -183,8 +183,12 @@ def submit_requirement(workflow_id: str, request: WorkflowRequirementRequest) ->
         "extra": request.extra,
     }
     project_context = _validate_document_project_name(workflow, requirement)
+    context_changes = {**project_context, "requirement": requirement}
+    knowledge_context = _knowledge_context_from_extra(requirement.get("extra"))
+    if knowledge_context:
+        context_changes["knowledgeContext"] = knowledge_context
     if project_context.get("needsHuman"):
-        context = _merge_context(workflow, {"requirement": requirement, "projectSelection": project_context["projectSelection"]})
+        context = _merge_context(workflow, {**context_changes, "projectSelection": project_context["projectSelection"]})
         message = _project_selection_message(project_context["projectSelection"])
         updated = db.mark_workflow_needs_human(
             workflow_id=workflow_id,
@@ -201,7 +205,7 @@ def submit_requirement(workflow_id: str, request: WorkflowRequirementRequest) ->
             "projectSelection": project_context["projectSelection"],
             "nextAction": "POST /workflow/{workflow_id}/resolve with targetStatus=PROJECT_SELECTED and projectName",
         }
-    context = _merge_context(workflow, {**project_context, "requirement": requirement})
+    context = _merge_context(workflow, context_changes)
     updated = db.update_workflow_requirement(
         workflow_id=workflow_id,
         context=context,
@@ -219,6 +223,13 @@ def submit_requirement(workflow_id: str, request: WorkflowRequirementRequest) ->
         "workflow": updated,
         "nextAction": "manual coding or future Yunxiao demand/task creation",
     }
+
+
+def _knowledge_context_from_extra(extra: Any) -> dict[str, Any]:
+    """从扩展字段提取知识上下文。"""
+    extra = extra if isinstance(extra, dict) else {}
+    knowledge_context = extra.get("knowledgeContext")
+    return dict(knowledge_context) if isinstance(knowledge_context, dict) else {}
 
 
 def _derive_requirement_summary(request: WorkflowRequirementRequest) -> str:
@@ -763,7 +774,11 @@ def submit_coding_result(workflow_id: str, request: WorkflowCodingResultRequest)
         "tests": request.tests,
         "extra": request.extra,
     }
-    context = _merge_context(workflow, {"codingResult": coding_result})
+    context_changes = {"codingResult": coding_result}
+    knowledge_context = _knowledge_context_from_extra(request.extra)
+    if knowledge_context:
+        context_changes["knowledgeContext"] = knowledge_context
+    context = _merge_context(workflow, context_changes)
     updated = db.update_workflow_coding_result(
         workflow_id=workflow_id,
         from_status=workflow["status"],

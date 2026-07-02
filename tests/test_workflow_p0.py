@@ -139,6 +139,39 @@ class WorkflowP0Test(unittest.TestCase):
         self.assertEqual(result["workflow"]["context"]["requirement"]["summary"], "新增接口")
         self.assertEqual(result["workflow"]["context"]["requirement"]["assigneeName"], "姬志猛")
 
+    def test_submit_requirement_promotes_knowledge_context_from_extra(self) -> None:
+        from app.models import WorkflowRequirementRequest
+        from app.workflow import submit_requirement
+
+        workflow = {"workflowId": "wf-knowledge", "status": "DOC_READ", "context": {}}
+        knowledge_context = {
+            "projectKey": "jdb-school-crm",
+            "businessKnowledge": {"documents": [{"title": "线索创建规则"}]},
+            "codeImpact": {"symbols": ["ClientService.create"]},
+            "branchName": "develop",
+            "commitId": "abc123",
+            "indexVersion": "abc123",
+        }
+
+        def fake_update(**kwargs):
+            return {**workflow, "status": "REQUIREMENT_PARSED", "context": kwargs["context"]}
+
+        with patch("app.workflow.db.find_workflow_instance", return_value=workflow), patch(
+            "app.workflow.db.update_workflow_requirement", side_effect=fake_update
+        ):
+            result = submit_requirement(
+                "wf-knowledge",
+                WorkflowRequirementRequest(
+                    summary="新增知识上下文",
+                    extra={"knowledgeContext": knowledge_context, "traceId": "trace-1"},
+                ),
+            )
+
+        context = result["workflow"]["context"]
+        self.assertEqual(context["knowledgeContext"], knowledge_context)
+        self.assertEqual(context["requirement"]["extra"]["knowledgeContext"], knowledge_context)
+        self.assertEqual(context["requirement"]["extra"]["traceId"], "trace-1")
+
     def test_submit_requirement_preserves_structured_demands(self) -> None:
         from app.models import WorkflowRequirementRequest
         from app.workflow import submit_requirement
@@ -883,6 +916,56 @@ class WorkflowP0Test(unittest.TestCase):
         self.assertEqual(result["workflow"]["status"], "CODE_SUBMITTED")
         self.assertEqual(result["workflow"]["commitId"], "abc123")
         self.assertEqual(result["workflow"]["context"]["codingResult"]["tests"], ["unit ok"])
+
+    def test_submit_coding_result_promotes_knowledge_context_from_extra(self) -> None:
+        from app.models import WorkflowCodingResultRequest
+        from app.workflow import submit_coding_result
+
+        workflow = {
+            "workflowId": "wf-knowledge-code",
+            "status": "CODING_REQUESTED",
+            "context": {
+                "knowledgeContext": {
+                    "projectKey": "jdb-school-crm",
+                    "businessKnowledge": {"documents": [{"title": "线索规则"}]},
+                }
+            },
+            "branchName": "feature/wf-knowledge-code",
+        }
+        knowledge_context = {
+            "projectKey": "jdb-school-crm",
+            "businessKnowledge": {"documents": [{"title": "线索规则"}]},
+            "codeImpact": {"symbols": ["ClientService.create"]},
+            "branchName": "feature/wf-knowledge-code",
+            "commitId": "abc123",
+            "indexVersion": "abc123",
+        }
+
+        def fake_update(**kwargs):
+            return {
+                **workflow,
+                "status": "CODE_SUBMITTED",
+                "branchName": kwargs["branch_name"],
+                "commitId": kwargs["commit_id"],
+                "context": kwargs["context"],
+            }
+
+        with patch("app.workflow.db.find_workflow_instance", return_value=workflow), patch(
+            "app.workflow.db.update_workflow_coding_result", side_effect=fake_update
+        ):
+            result = submit_coding_result(
+                "wf-knowledge-code",
+                WorkflowCodingResultRequest(
+                    branchName="feature/wf-knowledge-code",
+                    commitId="abc123",
+                    summary="完成影响面分析",
+                    extra={"knowledgeContext": knowledge_context},
+                ),
+            )
+
+        context = result["workflow"]["context"]
+        self.assertEqual(context["knowledgeContext"], knowledge_context)
+        self.assertEqual(context["codingResult"]["extra"]["knowledgeContext"], knowledge_context)
 
     def test_resolve_needs_human_to_apifox_synced(self) -> None:
         from app.models import WorkflowResolveRequest

@@ -316,12 +316,25 @@ Worker 只持有 OSS 只读凭证
 
 - 把知识图谱结果和 CodeGraph 影响面保存进 workflow context
 
+状态：已完成本地实现。
+
 主要文件：
 
 - `app/workflow.py`
 - `app/db.py`
 - `app/models.py`
 - 可新增 `tests/test_workflow_knowledge_context.py`
+
+已交付：
+
+- `app/workflow.py`
+- `tests/test_workflow_p0.py`
+
+实现说明：
+
+- `WorkflowRequirementRequest.extra.knowledgeContext` 会写入顶层 `context.knowledgeContext`。
+- `WorkflowCodingResultRequest.extra.knowledgeContext` 会写入或覆盖顶层 `context.knowledgeContext`。
+- 原始 `extra.knowledgeContext` 仍保留在 `context.requirement.extra` 或 `context.codingResult.extra` 中。
 
 建议结构：
 

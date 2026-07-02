@@ -7,7 +7,7 @@
 | 方案文档 | 已完成 | 已形成总分总方案，覆盖多项目、OSS、CodeGraph Worker、状态流转、一期/二期 | 后续随实现同步维护 |
 | Adapter 基础服务 | 已完成 | 47 服务器上的 `adapter-mvp` 正常运行，已有鉴权、审计、workflow、钉钉、云效、Apifox 相关基础能力 | 新增知识图谱和 CodeGraph 相关接口 |
 | 钉钉需求读取 | 已完成 | 已有 `/adapter/dingtalk/read` 和 workflow 读取链路 | 接入需求模板生成 |
-| Workflow 账本 | 部分完成 | 已有 workflow 创建、推进、需求提交、编码结果提交、流水线回调等基础状态 | 扩展知识上下文和 CodeGraph 状态 |
+| Workflow 账本 | 部分完成 | 已有 workflow 创建、推进、需求提交、编码结果提交、流水线回调等基础状态；已支持 `knowledgeContext` 写入上下文 | 后续扩展 CodeGraph 状态推进 |
 | 云效任务创建 | 部分完成 | 已有云效工作项创建相关能力和配置文档 | 与需求模板确认状态绑定 |
 | 云效流水线回调 | 部分完成 | 已有流水线事件回调、成功/失败推进、Apifox 触发基础链路 | 补 CodeGraph 索引回调状态 |
 | Apifox 同步 | 部分完成 | 已有 OpenAPI 清洗、Apifox 同步相关链路 | 绑定到 CI 成功后的正式关单前置条件 |
@@ -39,7 +39,7 @@
 | 7 | Adapter 记录索引版本 | 已完成 | `/adapter/codegraph/index-callback` 已返回成功并记录 indexVersion | 后续绑定 workflow 状态推进 |
 | 8 | 47 部署 CodeGraph Worker | 已完成 | `codegraph-worker.service` active/enabled，只监听 `127.0.0.1:18081` | 后续接入 Adapter 调用 |
 | 9 | Worker 下载/校验/解压/缓存/查询 | 已完成 | 真实 OSS 索引查询 `impact handle_index_callback` 返回影响面 | 后续扩展 query 类型调用入口 |
-| 10 | workflow 保存 `knowledgeContext` | 未开始 | `WorkflowRequirementRequest.extra` 可承载 | 扩展状态和上下文字段写入 |
+| 10 | workflow 保存 `knowledgeContext` | 已完成 | `WorkflowRequirementRequest.extra.knowledgeContext` 和 `WorkflowCodingResultRequest.extra.knowledgeContext` 会写入顶层 context | 后续接入真实查询结果自动填充 |
 | 11 | Codex 生成需求模板和 coding spec | 部分完成 | 已新增 `delivery/templates/需求上下文模板.md` 和 `delivery/templates/coding-spec模板.md` | 后续接入 workflow 输出和专用 skill |
 
 一期完成标准：
