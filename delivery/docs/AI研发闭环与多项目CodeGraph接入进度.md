@@ -16,7 +16,7 @@
 | CodeGraph 本地验证 | 已完成 | `jdb-school-crm` 本地已生成 CodeGraph 索引，并验证能查线索创建影响面 | 转为远端 OSS 索引链路 |
 | CodeGraph OSS 索引 | 未开始 | 尚未在 Codeup / 云效流水线生成并上传 OSS | 一期建设流水线索引脚本 |
 | CodeGraph Worker | 未开始 | 已确认 47 适合部署轻量 Worker，但尚未实现 | 一期部署 `127.0.0.1:18081` 轻量查询服务 |
-| Agent / Skill 固化 | 未开始 | 目前是方案层设计，尚未形成专用 skill | 先做 `jdb-knowledge-query` 和 `code-impact-analyzer` |
+| Agent / Skill 固化 | 部分完成 | 已新增需求上下文模板和 coding spec 模板，作为 Codex 执行前的产物格式 | 后续再固化 `jdb-knowledge-query` 和 `code-impact-analyzer` skill |
 | 自动合并 develop | 未开始 | 当前仍由 Codex/人工执行 git 流程 | 二期再接入 |
 | 自动关单 | 部分完成 | 已有云效关单能力，但尚未和 AI 研发闭环完整绑定 | 二期绑定 CI + Apifox 成功条件 |
 
@@ -40,7 +40,7 @@
 | 8 | 47 部署 CodeGraph Worker | 未开始 | 47 资源检查通过，Node/npm 已安装 | 安装 CodeGraph，新增 Worker 服务 |
 | 9 | Worker 下载/校验/解压/缓存/查询 | 未开始 | Worker 职责已定义 | 实现最小 `impact` 查询 |
 | 10 | workflow 保存 `knowledgeContext` | 未开始 | `WorkflowRequirementRequest.extra` 可承载 | 扩展状态和上下文字段写入 |
-| 11 | Codex 生成需求模板和 coding spec | 未开始 | 方案已定义 skill 方向 | 先沉淀模板和 prompt/skill |
+| 11 | Codex 生成需求模板和 coding spec | 部分完成 | 已新增 `delivery/templates/需求上下文模板.md` 和 `delivery/templates/coding-spec模板.md` | 后续接入 workflow 输出和专用 skill |
 
 一期完成标准：
 
@@ -107,6 +107,5 @@ Apifox 成功后才能关单。
 | P1 | 在 47 部署轻量 CodeGraph Worker | 打通知识上下文里的代码影响面 |
 | P1 | Codeup / 云效流水线上传 CodeGraph 索引到 OSS | 建立远端索引来源 |
 | P1 | workflow 写入 `knowledgeContext` | 让需求模板和 spec 有上下文 |
-| P2 | 固化需求模板和 spec skill | 降低每次人工整理成本 |
+| P2 | 固化需求模板和 spec skill | 模板已先落地，后续降低每次人工整理成本 |
 | P2 | 绑定 CI / Apifox / 关单门禁 | 完成闭环 |
-

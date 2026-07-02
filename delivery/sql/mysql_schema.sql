@@ -96,6 +96,47 @@ CREATE TABLE IF NOT EXISTS adapter_apifox_pipeline_config (
     KEY idx_adapter_apifox_pipeline_service_env (service_name, env_name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter Apifox流水线项目映射配置表';
 
+CREATE TABLE IF NOT EXISTS adapter_project_config (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
+    project_key VARCHAR(128) NOT NULL COMMENT '项目唯一Key，例如 jdb-school-crm',
+    project_name VARCHAR(128) NOT NULL COMMENT '项目展示名称，例如 校CRM',
+    knowledge_endpoint VARCHAR(2048) NULL COMMENT '项目知识图谱查询接口',
+    codegraph_enabled TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否启用CodeGraph：1启用，0停用',
+    codegraph_strategy VARCHAR(64) NOT NULL DEFAULT 'oss-artifact' COMMENT 'CodeGraph策略：oss-artifact、remote-worker、local-only',
+    oss_bucket VARCHAR(128) NULL COMMENT 'CodeGraph索引所在OSS bucket',
+    oss_prefix VARCHAR(512) NULL COMMENT 'CodeGraph索引OSS前缀',
+    remark VARCHAR(512) NULL COMMENT '备注',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY uk_adapter_project_key (project_key),
+    KEY idx_adapter_project_name (project_name),
+    KEY idx_adapter_project_codegraph_enabled (codegraph_enabled)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter多项目统一配置表';
+
+CREATE TABLE IF NOT EXISTS adapter_codegraph_index (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
+    project_key VARCHAR(128) NOT NULL COMMENT '项目唯一Key，例如 jdb-school-crm',
+    branch_name VARCHAR(256) NOT NULL COMMENT '分支名称，例如 develop',
+    commit_id VARCHAR(128) NOT NULL COMMENT '提交ID',
+    index_version VARCHAR(128) NOT NULL COMMENT '索引版本',
+    storage_type VARCHAR(32) NOT NULL DEFAULT 'oss' COMMENT '存储类型，例如 oss',
+    bucket_name VARCHAR(128) NULL COMMENT 'OSS bucket',
+    object_key VARCHAR(1024) NOT NULL COMMENT 'codegraph-index.tar.gz对象路径',
+    status_object_key VARCHAR(1024) NULL COMMENT 'codegraph-status.json对象路径',
+    sha256_object_key VARCHAR(1024) NULL COMMENT 'sha256.txt对象路径',
+    index_status VARCHAR(32) NOT NULL COMMENT '索引状态：success、failed',
+    stats_json JSON NULL COMMENT 'CodeGraph统计信息JSON',
+    error_message VARCHAR(2048) NULL COMMENT '失败原因',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY uk_adapter_codegraph_index_version (project_key, branch_name, commit_id, index_version),
+    KEY idx_adapter_codegraph_project_branch (project_key, branch_name),
+    KEY idx_adapter_codegraph_commit (commit_id),
+    KEY idx_adapter_codegraph_status (index_status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter CodeGraph索引版本表';
+
 CREATE TABLE IF NOT EXISTS adapter_yunxiao_account_config (
     id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
     account_name VARCHAR(128) NOT NULL COMMENT '账号配置名称，例如 default',

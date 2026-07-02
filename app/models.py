@@ -180,6 +180,35 @@ class WorkflowCodingResultRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class KnowledgeQueryRequest(BaseModel):
+    """KnowledgeQueryRequest 请求模型。"""
+    project_key: str = Field(alias="projectKey")
+    question: str
+    mode: str = "ai"
+    timeout: int = Field(default=30, ge=3, le=120)
+
+    model_config = {"populate_by_name": True}
+
+
+class CodeGraphIndexCallbackRequest(BaseModel):
+    """CodeGraphIndexCallbackRequest 请求模型。"""
+    project_key: str = Field(alias="projectKey")
+    branch_name: str = Field(alias="branchName")
+    commit_id: str = Field(alias="commitId")
+    index_version: str = Field(alias="indexVersion")
+    storage_type: str = Field(default="oss", alias="storageType")
+    bucket_name: str | None = Field(default=None, alias="bucketName")
+    object_key: str = Field(alias="objectKey")
+    status_object_key: str | None = Field(default=None, alias="statusObjectKey")
+    sha256_object_key: str | None = Field(default=None, alias="sha256ObjectKey")
+    index_status: str = Field(default="success", alias="indexStatus")
+    stats: dict[str, Any] = Field(default_factory=dict)
+    error_message: str | None = Field(default=None, alias="errorMessage")
+    workflow_id: str | None = Field(default=None, alias="workflowId")
+
+    model_config = {"populate_by_name": True}
+
+
 class YunxiaoWorkitemDeleteRequest(BaseModel):
     """YunxiaoWorkitemDeleteRequest 请求模型。"""
     operator: str = "codex"

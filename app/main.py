@@ -13,7 +13,9 @@ from app.apifox import (
     verify_signed_upstream_url,
 )
 from app.auth import require_api_token, require_delete_api_token, require_execute_approval
+from app.codegraph import handle_index_callback
 from app.dingtalk_docs import DingTalkDocError, read_dingtalk_doc, resolve_dingtalk_operator
+from app.knowledge import KnowledgeQueryError, query_knowledge
 from app.audit import (
     find_by_task_id,
     log_apifox_import,
@@ -27,8 +29,10 @@ from app.models import (
     AdapterRequest,
     AdapterResult,
     AdapterStatus,
+    CodeGraphIndexCallbackRequest,
     WorkflowAdvanceRequest,
     WorkflowCodingResultRequest,
+    KnowledgeQueryRequest,
     WorkflowRequirementRequest,
     WorkflowResolveRequest,
     WorkflowRetryRequest,
@@ -58,6 +62,7 @@ OPENAPI_TAGS = [
     {"name": "健康检查", "description": "Adapter 服务健康状态"},
     {"name": "OpenAPI", "description": "OpenAPI 清洗与导出"},
     {"name": "钉钉文档", "description": "钉钉/Alidocs 文档读取与配置"},
+    {"name": "知识图谱", "description": "项目知识图谱查询代理"},
     {"name": "交付工作流", "description": "需求交付 workflow 账本"},
     {"name": "适配器执行", "description": "Adapter 预览、执行、状态和审计"},
     {"name": "云效回调", "description": "云效任务和流水线事件回调"},
@@ -199,6 +204,41 @@ def adapter_dingtalk_resolve_operator(request: DingTalkResolveOperatorRequest):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post(
+    "/adapter/knowledge/query",
+    summary="查询项目知识图谱",
+    tags=["知识图谱"],
+    dependencies=[Depends(require_api_token)],
+)
+def adapter_knowledge_query(request: KnowledgeQueryRequest):
+    """项目知识图谱查询代理接口。"""
+    try:
+        return query_knowledge(
+            project_key=request.project_key,
+            question=request.question,
+            mode=request.mode,
+            timeout=request.timeout,
+        )
+    except KnowledgeQueryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post(
+    "/adapter/codegraph/index-callback",
+    summary="记录 CodeGraph 索引回调",
+    tags=["交付工作流"],
+    dependencies=[Depends(require_api_token)],
+)
+def adapter_codegraph_index_callback(request: CodeGraphIndexCallbackRequest):
+    """CodeGraph 索引回调接口。"""
+    try:
+        return handle_index_callback(request)
+    except HTTPException:
+        raise
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

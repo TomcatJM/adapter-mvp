@@ -178,6 +178,53 @@ def ensure_schema() -> None:
                 )
                 cursor.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS adapter_project_config (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
+                        project_key VARCHAR(128) NOT NULL COMMENT '项目唯一Key，例如 jdb-school-crm',
+                        project_name VARCHAR(128) NOT NULL COMMENT '项目展示名称，例如 校CRM',
+                        knowledge_endpoint VARCHAR(2048) NULL COMMENT '项目知识图谱查询接口',
+                        codegraph_enabled TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否启用CodeGraph：1启用，0停用',
+                        codegraph_strategy VARCHAR(64) NOT NULL DEFAULT 'oss-artifact' COMMENT 'CodeGraph策略：oss-artifact、remote-worker、local-only',
+                        oss_bucket VARCHAR(128) NULL COMMENT 'CodeGraph索引所在OSS bucket',
+                        oss_prefix VARCHAR(512) NULL COMMENT 'CodeGraph索引OSS前缀',
+                        remark VARCHAR(512) NULL COMMENT '备注',
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                        UNIQUE KEY uk_adapter_project_key (project_key),
+                        KEY idx_adapter_project_name (project_name),
+                        KEY idx_adapter_project_codegraph_enabled (codegraph_enabled)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter多项目统一配置表'
+                    """
+                )
+                cursor.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS adapter_codegraph_index (
+                        id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
+                        project_key VARCHAR(128) NOT NULL COMMENT '项目唯一Key，例如 jdb-school-crm',
+                        branch_name VARCHAR(256) NOT NULL COMMENT '分支名称，例如 develop',
+                        commit_id VARCHAR(128) NOT NULL COMMENT '提交ID',
+                        index_version VARCHAR(128) NOT NULL COMMENT '索引版本',
+                        storage_type VARCHAR(32) NOT NULL DEFAULT 'oss' COMMENT '存储类型，例如 oss',
+                        bucket_name VARCHAR(128) NULL COMMENT 'OSS bucket',
+                        object_key VARCHAR(1024) NOT NULL COMMENT 'codegraph-index.tar.gz对象路径',
+                        status_object_key VARCHAR(1024) NULL COMMENT 'codegraph-status.json对象路径',
+                        sha256_object_key VARCHAR(1024) NULL COMMENT 'sha256.txt对象路径',
+                        index_status VARCHAR(32) NOT NULL COMMENT '索引状态：success、failed',
+                        stats_json JSON NULL COMMENT 'CodeGraph统计信息JSON',
+                        error_message VARCHAR(2048) NULL COMMENT '失败原因',
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                            ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                        UNIQUE KEY uk_adapter_codegraph_index_version (project_key, branch_name, commit_id, index_version),
+                        KEY idx_adapter_codegraph_project_branch (project_key, branch_name),
+                        KEY idx_adapter_codegraph_commit (commit_id),
+                        KEY idx_adapter_codegraph_status (index_status)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Adapter CodeGraph索引版本表'
+                    """
+                )
+                cursor.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS adapter_yunxiao_account_config (
                         id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键',
                         account_name VARCHAR(128) NOT NULL COMMENT '账号配置名称，例如 default',
@@ -488,6 +535,48 @@ def _ensure_comments(cursor) -> None:
         "ALTER TABLE adapter_apifox_pipeline_config MODIFY remark VARCHAR(512) NULL COMMENT '备注'",
         "ALTER TABLE adapter_apifox_pipeline_config MODIFY created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'",
         "ALTER TABLE adapter_apifox_pipeline_config MODIFY updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'",
+        "ALTER TABLE adapter_project_config COMMENT='Adapter多项目统一配置表'",
+        "ALTER TABLE adapter_project_config MODIFY id BIGINT NOT NULL AUTO_INCREMENT COMMENT '自增主键'",
+        "ALTER TABLE adapter_project_config MODIFY project_key VARCHAR(128) NOT NULL COMMENT '项目唯一Key，例如 jdb-school-crm'",
+        "ALTER TABLE adapter_project_config MODIFY project_name VARCHAR(128) NOT NULL COMMENT '项目展示名称，例如 校CRM'",
+        "ALTER TABLE adapter_project_config ADD COLUMN knowledge_endpoint VARCHAR(2048) NULL COMMENT '项目知识图谱查询接口' AFTER project_name",
+        "ALTER TABLE adapter_project_config MODIFY knowledge_endpoint VARCHAR(2048) NULL COMMENT '项目知识图谱查询接口'",
+        "ALTER TABLE adapter_project_config ADD COLUMN codegraph_enabled TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否启用CodeGraph：1启用，0停用' AFTER knowledge_endpoint",
+        "ALTER TABLE adapter_project_config MODIFY codegraph_enabled TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否启用CodeGraph：1启用，0停用'",
+        "ALTER TABLE adapter_project_config ADD COLUMN codegraph_strategy VARCHAR(64) NOT NULL DEFAULT 'oss-artifact' COMMENT 'CodeGraph策略：oss-artifact、remote-worker、local-only' AFTER codegraph_enabled",
+        "ALTER TABLE adapter_project_config MODIFY codegraph_strategy VARCHAR(64) NOT NULL DEFAULT 'oss-artifact' COMMENT 'CodeGraph策略：oss-artifact、remote-worker、local-only'",
+        "ALTER TABLE adapter_project_config ADD COLUMN oss_bucket VARCHAR(128) NULL COMMENT 'CodeGraph索引所在OSS bucket' AFTER codegraph_strategy",
+        "ALTER TABLE adapter_project_config MODIFY oss_bucket VARCHAR(128) NULL COMMENT 'CodeGraph索引所在OSS bucket'",
+        "ALTER TABLE adapter_project_config ADD COLUMN oss_prefix VARCHAR(512) NULL COMMENT 'CodeGraph索引OSS前缀' AFTER oss_bucket",
+        "ALTER TABLE adapter_project_config MODIFY oss_prefix VARCHAR(512) NULL COMMENT 'CodeGraph索引OSS前缀'",
+        "ALTER TABLE adapter_project_config MODIFY remark VARCHAR(512) NULL COMMENT '备注'",
+        "ALTER TABLE adapter_project_config MODIFY created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'",
+        "ALTER TABLE adapter_project_config MODIFY updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'",
+        "ALTER TABLE adapter_codegraph_index COMMENT='Adapter CodeGraph索引版本表'",
+        "ALTER TABLE adapter_codegraph_index MODIFY id BIGINT NOT NULL AUTO_INCREMENT COMMENT '自增主键'",
+        "ALTER TABLE adapter_codegraph_index MODIFY project_key VARCHAR(128) NOT NULL COMMENT '项目唯一Key，例如 jdb-school-crm'",
+        "ALTER TABLE adapter_codegraph_index MODIFY branch_name VARCHAR(256) NOT NULL COMMENT '分支名称，例如 develop'",
+        "ALTER TABLE adapter_codegraph_index MODIFY commit_id VARCHAR(128) NOT NULL COMMENT '提交ID'",
+        "ALTER TABLE adapter_codegraph_index MODIFY index_version VARCHAR(128) NOT NULL COMMENT '索引版本'",
+        "ALTER TABLE adapter_codegraph_index ADD COLUMN storage_type VARCHAR(32) NOT NULL DEFAULT 'oss' COMMENT '存储类型，例如 oss' AFTER index_version",
+        "ALTER TABLE adapter_codegraph_index MODIFY storage_type VARCHAR(32) NOT NULL DEFAULT 'oss' COMMENT '存储类型，例如 oss'",
+        "ALTER TABLE adapter_codegraph_index ADD COLUMN bucket_name VARCHAR(128) NULL COMMENT 'OSS bucket' AFTER storage_type",
+        "ALTER TABLE adapter_codegraph_index MODIFY bucket_name VARCHAR(128) NULL COMMENT 'OSS bucket'",
+        "ALTER TABLE adapter_codegraph_index ADD COLUMN object_key VARCHAR(1024) NULL COMMENT 'codegraph-index.tar.gz对象路径' AFTER bucket_name",
+        "UPDATE adapter_codegraph_index SET object_key = '' WHERE object_key IS NULL",
+        "ALTER TABLE adapter_codegraph_index MODIFY object_key VARCHAR(1024) NOT NULL COMMENT 'codegraph-index.tar.gz对象路径'",
+        "ALTER TABLE adapter_codegraph_index ADD COLUMN status_object_key VARCHAR(1024) NULL COMMENT 'codegraph-status.json对象路径' AFTER object_key",
+        "ALTER TABLE adapter_codegraph_index MODIFY status_object_key VARCHAR(1024) NULL COMMENT 'codegraph-status.json对象路径'",
+        "ALTER TABLE adapter_codegraph_index ADD COLUMN sha256_object_key VARCHAR(1024) NULL COMMENT 'sha256.txt对象路径' AFTER status_object_key",
+        "ALTER TABLE adapter_codegraph_index MODIFY sha256_object_key VARCHAR(1024) NULL COMMENT 'sha256.txt对象路径'",
+        "ALTER TABLE adapter_codegraph_index ADD COLUMN index_status VARCHAR(32) NOT NULL DEFAULT 'success' COMMENT '索引状态：success、failed' AFTER sha256_object_key",
+        "ALTER TABLE adapter_codegraph_index MODIFY index_status VARCHAR(32) NOT NULL COMMENT '索引状态：success、failed'",
+        "ALTER TABLE adapter_codegraph_index ADD COLUMN stats_json JSON NULL COMMENT 'CodeGraph统计信息JSON' AFTER index_status",
+        "ALTER TABLE adapter_codegraph_index MODIFY stats_json JSON NULL COMMENT 'CodeGraph统计信息JSON'",
+        "ALTER TABLE adapter_codegraph_index ADD COLUMN error_message VARCHAR(2048) NULL COMMENT '失败原因' AFTER stats_json",
+        "ALTER TABLE adapter_codegraph_index MODIFY error_message VARCHAR(2048) NULL COMMENT '失败原因'",
+        "ALTER TABLE adapter_codegraph_index MODIFY created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间'",
+        "ALTER TABLE adapter_codegraph_index MODIFY updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间'",
         "ALTER TABLE adapter_yunxiao_account_config COMMENT='Adapter云效账号AK配置表'",
         "ALTER TABLE adapter_yunxiao_account_config ADD COLUMN auth_type VARCHAR(32) NOT NULL DEFAULT 'acs_ak' COMMENT '鉴权类型：acs_ak阿里云AK签名，legacy_token旧云效Token' AFTER account_name",
         "ALTER TABLE adapter_yunxiao_account_config MODIFY access_key_id VARCHAR(256) NULL COMMENT '阿里云AccessKey ID，acs_ak必填'",
@@ -1598,6 +1687,90 @@ def find_apifox_project_config(project_name: str) -> dict[str, Any] | None:
         return None
 
 
+def find_adapter_project_config(project_key: str) -> dict[str, Any] | None:
+    """按项目Key查找Adapter统一项目配置。"""
+    if not configured() or not project_key:
+        return None
+    try:
+        ensure_schema()
+        with connect() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        id,
+                        project_key,
+                        project_name,
+                        knowledge_endpoint,
+                        codegraph_enabled,
+                        codegraph_strategy,
+                        oss_bucket,
+                        oss_prefix,
+                        remark
+                    FROM adapter_project_config
+                    WHERE LOWER(project_key) = LOWER(%s)
+                    LIMIT 1
+                    """,
+                    (project_key,),
+                )
+                row = cursor.fetchone()
+        return _adapter_project_config_from_row(row) if row else None
+    except Exception:
+        return None
+
+
+def upsert_adapter_project_config(
+    *,
+    project_key: str,
+    project_name: str,
+    knowledge_endpoint: str | None = None,
+    codegraph_enabled: bool = False,
+    codegraph_strategy: str = "oss-artifact",
+    oss_bucket: str | None = None,
+    oss_prefix: str | None = None,
+    remark: str | None = None,
+) -> None:
+    """新增或更新Adapter统一项目配置。"""
+    if not configured() or not project_key or not project_name:
+        return
+    ensure_schema()
+    with connect() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO adapter_project_config (
+                    project_key,
+                    project_name,
+                    knowledge_endpoint,
+                    codegraph_enabled,
+                    codegraph_strategy,
+                    oss_bucket,
+                    oss_prefix,
+                    remark
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    project_name = VALUES(project_name),
+                    knowledge_endpoint = VALUES(knowledge_endpoint),
+                    codegraph_enabled = VALUES(codegraph_enabled),
+                    codegraph_strategy = VALUES(codegraph_strategy),
+                    oss_bucket = VALUES(oss_bucket),
+                    oss_prefix = VALUES(oss_prefix),
+                    remark = VALUES(remark)
+                """,
+                (
+                    project_key,
+                    project_name,
+                    knowledge_endpoint,
+                    1 if codegraph_enabled else 0,
+                    codegraph_strategy or "oss-artifact",
+                    oss_bucket,
+                    oss_prefix,
+                    remark,
+                ),
+            )
+
+
 def find_apifox_project_config_by_id(config_id: int | str | None) -> dict[str, Any] | None:
     """按主键查找Apifox项目配置。"""
     if not configured() or not config_id:
@@ -1762,6 +1935,72 @@ def upsert_apifox_pipeline_config(
             )
 
 
+def upsert_codegraph_index(
+    *,
+    project_key: str,
+    branch_name: str,
+    commit_id: str,
+    index_version: str,
+    object_key: str,
+    storage_type: str = "oss",
+    bucket_name: str | None = None,
+    status_object_key: str | None = None,
+    sha256_object_key: str | None = None,
+    index_status: str,
+    stats: dict[str, Any] | None = None,
+    error_message: str | None = None,
+) -> None:
+    """新增或更新CodeGraph索引版本记录。"""
+    if not all([configured(), project_key, branch_name, commit_id, index_version, object_key, index_status]):
+        return
+    ensure_schema()
+    stats_json = json.dumps(stats or {}, ensure_ascii=False, sort_keys=True)
+    with connect() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO adapter_codegraph_index (
+                    project_key,
+                    branch_name,
+                    commit_id,
+                    index_version,
+                    storage_type,
+                    bucket_name,
+                    object_key,
+                    status_object_key,
+                    sha256_object_key,
+                    index_status,
+                    stats_json,
+                    error_message
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    storage_type = VALUES(storage_type),
+                    bucket_name = VALUES(bucket_name),
+                    object_key = VALUES(object_key),
+                    status_object_key = VALUES(status_object_key),
+                    sha256_object_key = VALUES(sha256_object_key),
+                    index_status = VALUES(index_status),
+                    stats_json = VALUES(stats_json),
+                    error_message = VALUES(error_message)
+                """,
+                (
+                    project_key,
+                    branch_name,
+                    commit_id,
+                    index_version,
+                    storage_type or "oss",
+                    bucket_name,
+                    object_key,
+                    status_object_key,
+                    sha256_object_key,
+                    index_status,
+                    stats_json,
+                    (error_message or "")[:2048] or None,
+                ),
+            )
+
+
 def _apifox_project_config_from_row(row: dict[str, Any]) -> dict[str, Any]:
     """将Apifox项目配置行转换为API字典。"""
     return {
@@ -1773,6 +2012,21 @@ def _apifox_project_config_from_row(row: dict[str, Any]) -> dict[str, Any]:
         "apifoxProjectId": row.get("apifox_project_id"),
         "openapiUrl": row.get("openapi_url"),
         "importDelaySeconds": row.get("import_delay_seconds"),
+        "remark": row.get("remark"),
+    }
+
+
+def _adapter_project_config_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    """将Adapter项目配置行转换为API字典。"""
+    return {
+        "projectConfigId": row.get("id"),
+        "projectKey": row.get("project_key"),
+        "projectName": row.get("project_name"),
+        "knowledgeEndpoint": row.get("knowledge_endpoint"),
+        "codegraphEnabled": row.get("codegraph_enabled") in (1, True),
+        "codegraphStrategy": row.get("codegraph_strategy"),
+        "ossBucket": row.get("oss_bucket"),
+        "ossPrefix": row.get("oss_prefix"),
         "remark": row.get("remark"),
     }
 
