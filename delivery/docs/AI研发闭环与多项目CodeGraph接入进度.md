@@ -14,8 +14,8 @@
 | 多项目配置中心 | 未开始 | 当前更多是云效/Apifox维度配置，尚未抽象为统一 `adapter_project_config` | 一期优先建设 |
 | 知识图谱代理接口 | 未开始 | 校 CRM 已有知识图谱接口，但 Adapter 尚未代理 | 新增 `/adapter/knowledge/query` |
 | CodeGraph 本地验证 | 已完成 | `jdb-school-crm` 本地已生成 CodeGraph 索引，并验证能查线索创建影响面 | 转为远端 OSS 索引链路 |
-| CodeGraph OSS 索引 | 未开始 | 尚未在 Codeup / 云效流水线生成并上传 OSS | 一期建设流水线索引脚本 |
-| CodeGraph Worker | 未开始 | 已确认 47 适合部署轻量 Worker，但尚未实现 | 一期部署 `127.0.0.1:18081` 轻量查询服务 |
+| CodeGraph OSS 索引 | 已完成 | 本地脚本已完成真实 OSS 上传，并通过 Adapter 回调记录索引版本 | 后续接入真实 Codeup / 云效流水线 |
+| CodeGraph Worker | 已完成 | 已部署到 47，systemd 托管，监听 `127.0.0.1:18081`；真实 OSS 索引查询返回影响面 | 后续由 Adapter workflow 调用 |
 | Agent / Skill 固化 | 部分完成 | 已新增需求上下文模板和 coding spec 模板，作为 Codex 执行前的产物格式 | 后续再固化 `jdb-knowledge-query` 和 `code-impact-analyzer` skill |
 | 自动合并 develop | 未开始 | 当前仍由 Codex/人工执行 git 流程 | 二期再接入 |
 | 自动关单 | 部分完成 | 已有云效关单能力，但尚未和 AI 研发闭环完整绑定 | 二期绑定 CI + Apifox 成功条件 |
@@ -34,11 +34,11 @@
 | 2 | 新增 CodeGraph 索引表 `adapter_codegraph_index` | 未开始 | 方案已定义字段 | 建表并补回调接口 |
 | 3 | 新增 `/adapter/knowledge/query` | 未开始 | 校 CRM 已有 `/white/KnowledgeGraph/query` | Adapter 增加代理接口 |
 | 4 | 新增 `/adapter/codegraph/index-callback` | 未开始 | 方案已定义请求体 | Adapter 增加回调接口和入库 |
-| 5 | Codeup / 云效流水线生成 CodeGraph 索引 | 未开始 | 本地已验证 `codegraph index` 可用 | 编写流水线脚本 |
-| 6 | CodeGraph 索引上传 OSS | 未开始 | OSS 目录结构已规划 | 确认 bucket、AK/SK、生命周期 |
-| 7 | Adapter 记录索引版本 | 未开始 | 表结构已规划 | 回调入库 |
-| 8 | 47 部署 CodeGraph Worker | 未开始 | 47 资源检查通过，Node/npm 已安装 | 安装 CodeGraph，新增 Worker 服务 |
-| 9 | Worker 下载/校验/解压/缓存/查询 | 未开始 | Worker 职责已定义 | 实现最小 `impact` 查询 |
+| 5 | Codeup / 云效流水线生成 CodeGraph 索引 | 部分完成 | 本地脚本已验证 `codegraph init/index` 和 dry-run | 后续接入真实 Codeup / 云效流水线 |
+| 6 | CodeGraph 索引上传 OSS | 已完成 | 已完成真实 OSS 上传：索引包、状态文件、sha256 | 后续改用 CI 只写凭证 |
+| 7 | Adapter 记录索引版本 | 已完成 | `/adapter/codegraph/index-callback` 已返回成功并记录 indexVersion | 后续绑定 workflow 状态推进 |
+| 8 | 47 部署 CodeGraph Worker | 已完成 | `codegraph-worker.service` active/enabled，只监听 `127.0.0.1:18081` | 后续接入 Adapter 调用 |
+| 9 | Worker 下载/校验/解压/缓存/查询 | 已完成 | 真实 OSS 索引查询 `impact handle_index_callback` 返回影响面 | 后续扩展 query 类型调用入口 |
 | 10 | workflow 保存 `knowledgeContext` | 未开始 | `WorkflowRequirementRequest.extra` 可承载 | 扩展状态和上下文字段写入 |
 | 11 | Codex 生成需求模板和 coding spec | 部分完成 | 已新增 `delivery/templates/需求上下文模板.md` 和 `delivery/templates/coding-spec模板.md` | 后续接入 workflow 输出和专用 skill |
 

@@ -253,7 +253,7 @@ ADAPTER_API_TOKEN
 - 在 47 上部署轻量 CodeGraph 查询服务
 - Adapter 后续通过本机地址调用它
 
-状态：已完成本地实现，等待 OSS/真实 CodeGraph CLI/47 部署联调。
+状态：已完成 47 部署和真实 OSS 联调。
 
 建议新增目录：
 
@@ -302,6 +302,13 @@ Worker 只持有 OSS 只读凭证
 - `codegraph_worker/main.py`
 - `codegraph_worker/README.md`
 - `tests/test_codegraph_worker.py`
+- `scripts/remote_install_codegraph_worker.sh`
+
+部署验收：
+
+- `codegraph-worker.service` 已在 47 上 `active/enabled`。
+- 监听地址为 `127.0.0.1:18081`，公网 `18081` 不开放。
+- Worker 已用真实 OSS 索引完成 `impact handle_index_callback` 查询。
 
 ## 会话 F：workflow 写入 knowledgeContext
 
