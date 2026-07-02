@@ -29,6 +29,7 @@ class CodeGraphBuildScriptTest(unittest.TestCase):
         self.assertIn("codegraph-index.tar.gz", content)
         self.assertIn("codegraph-status.json", content)
         self.assertIn("sha256.txt", content)
+        self.assertIn('"${CODEGRAPH_BIN}" init .', content)
         self.assertIn("Authorization: Bearer", content)
         self.assertIn('WORK_DIR="$(cd "${WORK_DIR_INPUT}" && pwd)"', content)
         self.assertIn('OUTPUT_DIR="$(cd "${OUTPUT_DIR_INPUT}" && pwd)"', content)

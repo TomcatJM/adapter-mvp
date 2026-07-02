@@ -96,7 +96,11 @@ require_command "${PYTHON_BIN}"
 (
   cd "${WORK_DIR}"
   "${CODEGRAPH_BIN}" telemetry off
-  "${CODEGRAPH_BIN}" index .
+  if [ -d ".codegraph" ]; then
+    "${CODEGRAPH_BIN}" index .
+  else
+    "${CODEGRAPH_BIN}" init .
+  fi
   "${CODEGRAPH_BIN}" status . --json >"${STATUS_JSON}"
   tar -czf "${INDEX_ARCHIVE}" .codegraph -C "${OUTPUT_DIR}" codegraph-status.json
 )
